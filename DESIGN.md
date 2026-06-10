@@ -126,15 +126,15 @@ anchor = max(trade_IQM, book 深度利率, 設定的最低利率底線)
 ## 六、實作步驟（依此順序進行）
 
 - [x] **Step 0** 策略研究
-- [ ] **Step 1** 專案初始化：目錄結構、git、config、.env 範本
-- [ ] **Step 2** Bitfinex API 客戶端（公開 + HMAC 私有），可獨立測試
-- [ ] **Step 3** 策略引擎（純函式，可單元測試）：市場分析、階梯、天期、重掛判斷
-- [ ] **Step 4** 核心循環 engine：排程、下單、撤單、成交偵測、DRY_RUN
-- [ ] **Step 5** Supabase：schema.sql + 寫入層
-- [ ] **Step 6** Telegram：推播 + 指令執行緒
-- [ ] **Step 7** 網頁 Dashboard + GitHub Pages workflow
-- [ ] **Step 8** 單元測試 + 本機 DRY_RUN 實測（接真實公開市場數據）
-- [ ] **Step 9** 部署文件：Dockerfile、Zeabur 設定、上線檢查清單
+- [x] **Step 1** 專案初始化：目錄結構、git、config、.env 範本
+- [x] **Step 2** Bitfinex API 客戶端（公開 + HMAC 私有），可獨立測試
+- [x] **Step 3** 策略引擎（純函式，可單元測試）：市場分析、階梯、天期、重掛判斷
+- [x] **Step 4** 核心循環 engine：排程、下單、撤單、成交偵測、DRY_RUN
+- [x] **Step 5** Supabase：schema.sql + 寫入層
+- [x] **Step 6** Telegram：推播 + 指令執行緒
+- [x] **Step 7** 網頁 Dashboard + GitHub Pages workflow
+- [x] **Step 8** 單元測試 + 本機 DRY_RUN 實測（接真實公開市場數據）
+- [x] **Step 9** 部署文件：Dockerfile、Zeabur 設定、上線檢查清單
 
 ## 七、上線流程（規劃）
 
