@@ -81,8 +81,8 @@ class Store:
             row["balance"] = round(balance, 2)
         return self.upsert("earnings", row, on_conflict="date,currency")
 
-    def update_bot_status(self, status: dict) -> bool:
-        return self.upsert("bot_status", {"id": 1, **status}, on_conflict="id")
+    def update_bot_status(self, symbol: str, status: dict) -> bool:
+        return self.upsert("bot_status", {"symbol": symbol, **status}, on_conflict="symbol")
 
     def prune_old(self, days_snapshots: int = 30, days_actions: int = 90) -> None:
         """清掉過舊資料，避免免費額度爆掉。"""

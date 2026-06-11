@@ -226,53 +226,91 @@ async function tryUnlock(token, silent = false) {
 }
 
 function renderDashboard(d) {
-  const s = d.status || {};
-  $("botMode").textContent = (s.mode || "未知") + (s.paused ? "（暫停中）" : "");
-  if (s.ts) {
-    const age = (Date.now() - new Date(s.ts).getTime()) / 60000;
+  const statuses = d.statuses || [];
+  const first = statuses[0] || {};
+  $("botMode").textContent = (first.mode || "未知") + (first.paused ? "（暫停中）" : "");
+
+  const newestTs = Math.max(0, ...statuses.map((s) => s.ts ? new Date(s.ts).getTime() : 0));
+  if (newestTs) {
+    const age = (Date.now() - newestTs) / 60000;
     $("botHeartbeat").textContent = age < 15
       ? `🟢 ${Math.round(age)} 分鐘前回報`
       : `🔴 已 ${Math.round(age)} 分鐘沒回報，機器人可能停了`;
   }
-  const cur = "USD";
-  $("dLent").textContent = (s.total_lent ?? 0).toLocaleString() + " " + cur;
-  $("dApy").textContent = pct(s.weighted_apy ?? 0);
-  $("dAvail").textContent = (s.available ?? 0).toLocaleString() + " " + cur;
-  $("dCredits").textContent = s.credits_count ?? 0;
-  $("dOffers").textContent = s.offers_count ?? 0;
+
+  // 總覽卡片：USD 與 UST 都是美元穩定幣，直接加總顯示
+  const sum = (f) => statuses.reduce((a, s) => a + (f(s) || 0), 0);
+  const totalLent = sum((s) => s.total_lent);
+  const weightedApy = totalLent
+    ? statuses.reduce((a, s) => a + (s.total_lent || 0) * (s.weighted_apy || 0), 0) / totalLent
+    : 0;
+  $("dLent").textContent = "$" + totalLent.toLocaleString();
+  $("dApy").textContent = pct(weightedApy);
+  $("dAvail").textContent = "$" + sum((s) => s.available).toLocaleString();
+  $("dCredits").textContent = sum((s) => s.credits_count);
+  $("dOffers").textContent = sum((s) => s.offers_count);
 
   const earnings = d.earnings || [];
   const total30 = earnings.reduce((a, e) => a + (e.amount || 0), 0);
-  $("dEarn30").textContent = total30.toFixed(2) + " " + cur;
+  $("dEarn30").textContent = "$" + total30.toFixed(2);
 
+  renderSymbolTable(statuses);
   drawEarningsChart(earnings);
   drawAnchorChart(d.snapshots || []);
-  renderOffers(s.offers || []);
+  renderOffers(statuses);
   renderActions(d.recent_actions || []);
 }
 
+function renderSymbolTable(statuses) {
+  const tbody = $("symbolTable").querySelector("tbody");
+  tbody.innerHTML = statuses.length
+    ? statuses.map((s) => `<tr><td>${s.symbol}</td>
+        <td>$${(s.total_lent ?? 0).toLocaleString()}</td>
+        <td>${pct(s.weighted_apy ?? 0)}</td>
+        <td>$${(s.available ?? 0).toLocaleString()}</td>
+        <td>${s.offers_count ?? 0} 筆</td></tr>`).join("")
+    : `<tr><td colspan="5" class="muted">機器人還沒回報</td></tr>`;
+}
+
+const SYMBOL_COLORS = { fUSD: "#4fc3f7", fUST: "#4caf80", USD: "#4fc3f7", UST: "#4caf80" };
+
 function drawEarningsChart(earnings) {
+  // 依幣別分組 → 堆疊長條圖
+  const dates = [...new Set(earnings.map((e) => e.date))].sort();
+  const currencies = [...new Set(earnings.map((e) => e.currency))];
+  const datasets = currencies.map((cur) => ({
+    label: cur,
+    data: dates.map((d) =>
+      earnings.find((e) => e.date === d && e.currency === cur)?.amount ?? 0),
+    backgroundColor: SYMBOL_COLORS[cur] || chartColors.good,
+  }));
   earningsChart?.destroy();
   earningsChart = new Chart($("earningsChart"), {
     type: "bar",
-    data: {
-      labels: earnings.map((e) => e.date.slice(5)),
-      datasets: [{ data: earnings.map((e) => e.amount),
-                   backgroundColor: chartColors.good }],
+    data: { labels: dates.map((d) => d.slice(5)), datasets },
+    options: {
+      plugins: { legend: { display: currencies.length > 1 } },
+      scales: { x: { stacked: true }, y: { stacked: true } },
     },
-    options: { plugins: { legend: { display: false } } },
   });
 }
 
 function drawAnchorChart(snaps) {
-  const pts = snaps.map((s) => ({ x: new Date(s.ts).getTime(), y: s.anchor_apy }));
+  // 依幣別分組 → 多條線
+  const symbols = [...new Set(snaps.map((s) => s.symbol))];
+  const datasets = symbols.map((sym) => ({
+    label: sym,
+    data: snaps.filter((s) => s.symbol === sym)
+      .map((s) => ({ x: new Date(s.ts).getTime(), y: s.anchor_apy })),
+    borderColor: SYMBOL_COLORS[sym] || chartColors.warn,
+    pointRadius: 0, borderWidth: 1.5, tension: 0.2,
+  }));
   anchorChart?.destroy();
   anchorChart = new Chart($("anchorChart"), {
     type: "line",
-    data: { datasets: [{ data: pts, borderColor: chartColors.warn,
-                         pointRadius: 0, borderWidth: 1.5, tension: 0.2 }] },
+    data: { datasets },
     options: {
-      plugins: { legend: { display: false } },
+      plugins: { legend: { display: symbols.length > 1 } },
       scales: {
         x: { type: "linear", ticks: {
           maxTicksLimit: 6,
@@ -285,12 +323,14 @@ function drawAnchorChart(snaps) {
   });
 }
 
-function renderOffers(offers) {
+function renderOffers(statuses) {
+  const rows = statuses.flatMap((s) =>
+    (s.offers || []).map((o) => ({ symbol: s.symbol, ...o })));
   const tbody = $("offersTable").querySelector("tbody");
-  tbody.innerHTML = offers.length
-    ? offers.map((o) => `<tr><td>$${o.amount.toLocaleString()}</td>
+  tbody.innerHTML = rows.length
+    ? rows.map((o) => `<tr><td>${o.symbol}</td><td>$${o.amount.toLocaleString()}</td>
         <td>${pct(dailyToApy(o.rate))}</td><td>${o.period} 天</td></tr>`).join("")
-    : `<tr><td colspan="3" class="muted">目前沒有掛單</td></tr>`;
+    : `<tr><td colspan="4" class="muted">目前沒有掛單</td></tr>`;
 }
 
 function renderActions(actions) {
@@ -299,7 +339,7 @@ function renderActions(actions) {
     ? actions.map((a) => {
         const t = new Date(a.ts).toLocaleString("zh-TW", { hour12: false });
         const det = a.detail
-          ? `$${(a.detail.amount ?? 0).toLocaleString()} @ 年化 ${pct(dailyToApy(a.detail.rate ?? 0))}`
+          ? `${a.detail.symbol || ""} $${(a.detail.amount ?? 0).toLocaleString()} @ 年化 ${pct(dailyToApy(a.detail.rate ?? 0))}`
           : "";
         return `<tr><td>${t}</td><td>${a.action}</td><td>${det}</td></tr>`;
       }).join("")

@@ -54,9 +54,9 @@ create table if not exists earnings (
   primary key (date, currency)
 );
 
--- 機器人最新狀態（單列，網頁總覽用）
+-- 機器人最新狀態（每幣別一列，網頁總覽用）
 create table if not exists bot_status (
-  id int primary key,
+  symbol text primary key,
   ts timestamptz,
   mode text,
   paused boolean,
@@ -99,7 +99,7 @@ create or replace function dashboard_data(p_token text)
 returns jsonb
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   stored_hash text;
@@ -111,7 +111,10 @@ begin
   end if;
 
   return jsonb_build_object(
-    'status', (select to_jsonb(b) from bot_status b where id = 1),
+    'statuses', (
+      select coalesce(jsonb_agg(to_jsonb(b) order by b.symbol), '[]'::jsonb)
+      from bot_status b
+    ),
     'earnings', (
       select coalesce(jsonb_agg(to_jsonb(e) order by e.date), '[]'::jsonb)
       from earnings e
@@ -119,12 +122,12 @@ begin
     ),
     'snapshots', (
       select coalesce(jsonb_agg(jsonb_build_object(
-               'ts', s.ts, 'anchor_apy', s.anchor_apy,
+               'ts', s.ts, 'symbol', s.symbol, 'anchor_apy', s.anchor_apy,
                'frr', s.frr, 'spike', s.spike) order by s.ts), '[]'::jsonb)
       from (
         select * from market_snapshots
         where ts > now() - interval '24 hours'
-        order by ts desc limit 288
+        order by ts desc limit 576
       ) s
     ),
     'recent_actions', (

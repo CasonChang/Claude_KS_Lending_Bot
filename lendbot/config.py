@@ -38,12 +38,15 @@ class Config:
     raw: dict = field(default_factory=dict)
 
     @property
-    def symbol(self) -> str:
-        return self.raw.get("symbol", "fUSD")
+    def symbols(self) -> list[str]:
+        syms = self.raw.get("symbols")
+        if not syms:  # 向後相容舊的單幣別設定
+            syms = [self.raw.get("symbol", "fUSD")]
+        return list(syms)
 
     @property
-    def currency(self) -> str:
-        return self.symbol[1:]  # fUSD -> USD
+    def rebalance_alert_apy_diff(self) -> float:
+        return float(self.raw.get("rebalance_alert_apy_diff", 2.0))
 
     @property
     def cycle_minutes(self) -> float:
