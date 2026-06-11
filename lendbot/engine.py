@@ -83,6 +83,8 @@ class Engine:
         self.last_earnings_sync = 0.0
         self.last_report_date = ""
         self.last_rebalance_notify = 0.0
+        self.last_rebalance_check = 0.0
+        self.ma_apy: dict[str, float] = {}  # 各幣別 30 日 MA 年化（%），給 /rates 與日報用
         self.cycle_count = 0
         self.errors_in_row = 0
 
@@ -280,21 +282,68 @@ class Engine:
             "spike": view.spike,
         })
 
-    # ════════ 利差警報 ════════
+    # ════════ 利差提醒（長期 MA，依 research/RESULTS.md 回測結論）════════
 
     def _maybe_rebalance_alert(self):
-        """兩幣別錨點年化差太多時提醒手動調倉（6 小時冷卻）。"""
-        views = {s: st.last_view for s, st in self.states.items() if st.last_view}
-        if len(views) < 2 or time.time() - self.last_rebalance_notify < 6 * 3600:
+        """30 日 MA 利差連續 N 天超過門檻才提醒（每 6 小時檢查一次，計算完全無狀態）。
+
+        回測顯示頻繁切換會被 0.2% 轉換成本吃掉（最差年化 -1.89%），
+        所以門檻高、確認期長、冷卻久，3 年大約只該觸發 1 次。
+        """
+        rcfg = self.cfg.rebalance
+        if len(self.cfg.symbols) < 2 or time.time() - self.last_rebalance_check < 6 * 3600:
             return
-        items = sorted(views.items(), key=lambda kv: kv[1].anchor, reverse=True)
-        (hi_sym, hi_v), (lo_sym, lo_v) = items[0], items[-1]
-        diff = (daily_to_apy(hi_v.anchor) - daily_to_apy(lo_v.anchor)) * 100
-        if diff >= self.cfg.rebalance_alert_apy_diff:
-            self.last_rebalance_notify = time.time()
-            self.tg.notify(f"⚖️ 利差提醒：{hi_sym} 錨點年化 {fmt_apy(hi_v.anchor)} 比 "
-                           f"{lo_sym} 的 {fmt_apy(lo_v.anchor)} 高 {diff:.1f} 個百分點\n"
-                           f"可考慮把資金移往 {hi_sym[1:]} 放貸")
+        self.last_rebalance_check = time.time()
+
+        ma_days = int(rcfg.get("ma_days", 30))
+        confirm = int(rcfg.get("confirm_days", 7))
+        threshold = float(rcfg.get("min_diff_apy", 2.0))
+        cost_pct = float(rcfg.get("switch_cost_pct", 0.2))
+
+        # 抓兩幣別的日 K，對齊日期
+        series: dict[str, dict[int, float]] = {}
+        try:
+            for sym in self.cfg.symbols[:2]:
+                candles = self.client.funding_candles(sym, tf="1D",
+                                                      limit=ma_days + confirm + 5)
+                series[sym] = {c["mts"]: c["close"] for c in candles}
+        except BfxError as e:
+            log.warning("利差檢查抓 K 線失敗: %s", e)
+            return
+        sym_a, sym_b = self.cfg.symbols[:2]
+        days = sorted(set(series[sym_a]) & set(series[sym_b]))
+        if len(days) < ma_days + confirm:
+            return
+
+        def ma_apy(sym: str, end_idx: int) -> float:
+            window = [series[sym][d] for d in days[end_idx - ma_days + 1:end_idx + 1]]
+            return daily_to_apy(sum(window) / len(window)) * 100
+
+        # 記錄最新 MA 給 /rates 與日報
+        last = len(days) - 1
+        self.ma_apy = {s: round(ma_apy(s, last), 2) for s in (sym_a, sym_b)}
+
+        # 連續 confirm 天、同方向、利差都超過門檻才算成立
+        diffs = [ma_apy(sym_a, last - k) - ma_apy(sym_b, last - k) for k in range(confirm)]
+        if all(d > threshold for d in diffs):
+            hi, lo = sym_a, sym_b
+        elif all(d < -threshold for d in diffs):
+            hi, lo = sym_b, sym_a
+        else:
+            return
+
+        cooldown = float(rcfg.get("cooldown_days", 14)) * 86400
+        if time.time() - self.last_rebalance_notify < cooldown:
+            return
+        self.last_rebalance_notify = time.time()
+        diff_now = abs(diffs[0])
+        breakeven = (cost_pct / 100) / (diff_now / 100 / 365)  # 幾天回本
+        self.tg.notify(
+            f"⚖️ 長期利差提醒：{hi} 的 30 日 MA 年化 {self.ma_apy[hi]:.2f}% 已連續 "
+            f"{confirm} 天比 {lo}（{self.ma_apy[lo]:.2f}%）高超過 {threshold} 個百分點\n"
+            f"若把資金從 {lo[1:]} 換到 {hi[1:]}：轉換成本約 {cost_pct}%，"
+            f"以目前利差約 {breakeven:.0f} 天回本\n"
+            f"（依回測，這種訊號 3 年只該出現約 1 次，值得認真考慮）")
 
     # ════════ 收益 ════════
 
@@ -347,7 +396,12 @@ class Engine:
         today = now.strftime("%Y-%m-%d")
         if now.hour == hour and self.last_report_date != today:
             self.last_report_date = today
-            self.tg.notify("📊 每日報告\n" + self._earnings_summary() + "\n\n" + self._status_text())
+            ma_line = ""
+            if self.ma_apy:
+                ma_line = "\n30日MA年化：" + "｜".join(f"{s} {a:.2f}%"
+                                                    for s, a in self.ma_apy.items())
+            self.tg.notify("📊 每日報告\n" + self._earnings_summary() + ma_line
+                           + "\n\n" + self._status_text())
 
     # ════════ Telegram 指令 ════════
 
@@ -396,6 +450,9 @@ class Engine:
             lines.append(f"{sym}｜FRR {fmt_apy(v.frr)}｜IQM {fmt_apy(v.trade_iqm)}｜"
                          f"錨點 {fmt_apy(v.anchor)}｜近高 {fmt_apy(v.recent_high)}"
                          f"{'｜🔥SPIKE' if v.spike else ''}")
+        if self.ma_apy:
+            ma_str = "｜".join(f"{s} {a:.2f}%" for s, a in self.ma_apy.items())
+            lines.append(f"30日MA年化：{ma_str}")
         return "\n".join(lines)
 
     def _cmd_pause(self) -> str:

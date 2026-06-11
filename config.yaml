@@ -2,8 +2,14 @@
 symbols: [fUSD, fUST]   # 放貸幣別（可多個）：fUSD=美元, fUST=USDT
 cycle_minutes: 5        # 每幾分鐘跑一次循環
 
-# 利差警報：兩幣別錨點年化差超過幾個百分點時，推播提醒手動調倉
-rebalance_alert_apy_diff: 2.0
+# 利差提醒（依 research/RESULTS.md 回測結論：長期觀察、極少出手）
+# 30 日 MA 利差連續 confirm_days 天都 > min_diff_apy 才推播；頻繁切換會被成本吃掉
+rebalance:
+  ma_days: 30          # 移動平均天數
+  min_diff_apy: 2.0    # 年化利差門檻（百分點）
+  confirm_days: 7      # 需連續成立天數
+  cooldown_days: 14    # 推播冷卻
+  switch_cost_pct: 0.2 # 估計單次轉換成本（算回本天數用）
 
 strategy:
   # 錨點利率 = max(成交IQM, 掛單簿深度利率, min_rate_apy 換算的日利率)

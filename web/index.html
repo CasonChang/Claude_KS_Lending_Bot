@@ -6,33 +6,18 @@
 <title>Bitfinex 放貸 Dashboard</title>
 <link rel="stylesheet" href="style.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
 <header>
   <h1>💸 Bitfinex 放貸 Dashboard</h1>
-  <div class="header-right">
-    <select id="symbolSelect">
-      <option value="fUSD">fUSD（美元）</option>
-      <option value="fUST">fUST（USDT）</option>
-    </select>
-    <span id="lastUpdate" class="muted"></span>
-  </div>
+  <span id="lastUpdate" class="muted"></span>
 </header>
 
-<!-- ═══ 市場數據（公開）═══ -->
+<!-- ═══ 市場數據（公開，fUSD 與 fUST 並列）═══ -->
 <section>
   <h2>📈 市場放貸數據 <span class="muted small">Bitfinex 公開 WebSocket 即時推送</span></h2>
-  <div class="cards" id="marketCards">
-    <div class="card"><div class="label">FRR 年化</div><div class="value" id="mFrr">—</div></div>
-    <div class="card"><div class="label">最近成交年化</div><div class="value" id="mLast">—</div></div>
-    <div class="card"><div class="label">成交 IQM 年化</div><div class="value" id="mIqm">—</div></div>
-    <div class="card"><div class="label">最佳掛單年化</div><div class="value" id="mAsk">—</div></div>
-    <div class="card"><div class="label">近 1 小時最高</div><div class="value" id="mHigh">—</div></div>
-  </div>
-  <div class="charts">
-    <div class="chart-box"><h3>成交利率走勢（年化 %）</h3><canvas id="tradesChart"></canvas></div>
-    <div class="chart-box"><h3>掛單簿深度（放貸方）</h3><canvas id="bookChart"></canvas></div>
-  </div>
+  <div id="marketSections"><!-- JS 依 SYMBOLS 動態建立各幣別區塊 --></div>
 </section>
 
 <!-- ═══ 個人 Dashboard（token 解鎖）═══ -->
@@ -40,7 +25,7 @@
   <h2>🤖 我的放貸總覽</h2>
 
   <div id="lockPanel" class="lock-panel">
-    <p class="muted">輸入 Dashboard 密碼以檢視個人數據（密碼設定在 Supabase 的 app_settings）</p>
+    <p class="muted">輸入 Dashboard 密碼以檢視個人數據</p>
     <div class="lock-row">
       <input type="password" id="tokenInput" placeholder="Dashboard 密碼">
       <button id="unlockBtn">解鎖</button>

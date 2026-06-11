@@ -45,8 +45,8 @@ class Config:
         return list(syms)
 
     @property
-    def rebalance_alert_apy_diff(self) -> float:
-        return float(self.raw.get("rebalance_alert_apy_diff", 2.0))
+    def rebalance(self) -> dict:
+        return self.raw.get("rebalance", {})
 
     @property
     def cycle_minutes(self) -> float:

@@ -119,6 +119,18 @@ class BfxClient:
         d = self._get_public(f"trades/{symbol}/hist", {"limit": limit})
         return [FundingTrade(mts=int(t[1]), amount=t[2], rate=t[3], period=int(t[4])) for t in d]
 
+    def funding_candles(self, symbol: str, tf: str = "1D", limit: int = 1100,
+                        start_mts: int | None = None, sort: int = 1) -> list[dict]:
+        """歷史利率 K 線（聚合 2-30 天期）。回傳由舊到新：
+        [{mts, open, close, high, low, volume}, ...]，利率為日利率。"""
+        key = f"trade:{tf}:{symbol}:a30:p2:p30"
+        params: dict = {"limit": limit, "sort": sort}
+        if start_mts:
+            params["start"] = start_mts
+        d = self._get_public(f"candles/{key}/hist", params)
+        return [{"mts": int(c[0]), "open": c[1], "close": c[2],
+                 "high": c[3], "low": c[4], "volume": c[5]} for c in d]
+
     # ---------- 私有 API（HMAC 簽名）----------
 
     def _post_auth(self, path: str, body: dict | None = None):

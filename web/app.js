@@ -1,5 +1,6 @@
 /* Bitfinex 放貸 Dashboard
- * 市場區：Bitfinex 公開 WebSocket（REST 沒開 CORS，WS 不受限且即時）
+ * 市場區：fUSD 與 fUST 並列。即時數據走 Bitfinex 公開 WebSocket
+ *（REST 沒開 CORS），K 棒用 candles 頻道 + lightweight-charts。
  * 個人區：Supabase RPC dashboard_data(token)，token 存 localStorage
  */
 "use strict";
@@ -8,19 +9,23 @@ const WS_URL = "wss://api-pub.bitfinex.com/ws/2";
 const CFG = window.APP_CONFIG || {};
 const $ = (id) => document.getElementById(id);
 
+const SYMBOLS = [
+  { sym: "fUSD", label: "💵 fUSD（美元）" },
+  { sym: "fUST", label: "🪙 fUST（USDT）" },
+];
+const TFS = ["15m", "1h", "6h", "1D"];
+const DEFAULT_TF = "1h";
+
 const dailyToApy = (r) => (Math.pow(1 + r, 365) - 1) * 100;
 const pct = (apy) => apy.toFixed(2) + "%";
 const chartColors = {
   grid: "#2c3644", text: "#8b98a9",
-  line: "#4fc3f7", good: "#4caf80", warn: "#ffb74d",
+  line: "#4fc3f7", good: "#4caf80", bad: "#ef5350", warn: "#ffb74d",
 };
+const SYMBOL_COLORS = { fUSD: "#4fc3f7", fUST: "#4caf80", USD: "#4fc3f7", UST: "#4caf80" };
 
 Chart.defaults.color = chartColors.text;
 Chart.defaults.borderColor = chartColors.grid;
-
-let tradesChart, bookChart, earningsChart, anchorChart;
-
-// ═══════════ 市場區（WebSocket）═══════════
 
 function iqm(values) {
   if (!values.length) return 0;
@@ -31,141 +36,244 @@ function iqm(values) {
   return mid.reduce((a, b) => a + b, 0) / mid.length;
 }
 
+// ═══════════ 市場區 DOM 建立 ═══════════
+
+function buildMarketDOM() {
+  $("marketSections").innerHTML = SYMBOLS.map(({ sym, label }) => `
+    <div class="sym-block">
+      <h2 class="sym-title">${label}</h2>
+      <div class="cards">
+        <div class="card"><div class="label">FRR 年化</div><div class="value" id="frr-${sym}">—</div></div>
+        <div class="card"><div class="label">最近成交</div><div class="value" id="last-${sym}">—</div></div>
+        <div class="card"><div class="label">成交 IQM</div><div class="value" id="iqm-${sym}">—</div></div>
+        <div class="card"><div class="label">最佳掛單</div><div class="value" id="ask-${sym}">—</div></div>
+        <div class="card"><div class="label">近 1 小時最高</div><div class="value" id="high-${sym}">—</div></div>
+      </div>
+      <div class="sym-charts">
+        <div class="chart-box">
+          <div class="chart-head">
+            <h3>成交利率 K 線（年化 %）</h3>
+            <div class="tf-btns" id="tfs-${sym}">
+              ${TFS.map((tf) => `<button class="tf ${tf === DEFAULT_TF ? "active" : ""}"
+                 data-sym="${sym}" data-tf="${tf}">${tf}</button>`).join("")}
+            </div>
+          </div>
+          <div class="kchart" id="kchart-${sym}"></div>
+        </div>
+        <div class="chart-box">
+          <h3>掛單簿深度（放貸方）</h3>
+          <canvas id="book-${sym}"></canvas>
+        </div>
+      </div>
+    </div>`).join("");
+
+  document.querySelectorAll(".tf").forEach((btn) =>
+    btn.addEventListener("click", () => switchTf(btn.dataset.sym, btn.dataset.tf)));
+}
+
+// ═══════════ 市場區 WebSocket ═══════════
+
 const market = {
   ws: null,
-  chan: {},          // chanId -> "ticker" | "trades" | "book"
-  trades: [],        // [{mts, rate}] 新到舊
-  ticker: null,      // 原始 ticker 陣列
-  book: [],          // 掛單簿快照 [[rate, period, count, amount], ...]
-  dirty: false,
+  chan: {},     // chanId -> { sym, channel }
+  states: {},   // sym -> { tf, ticker, trades[], book[], candleChanId, kchart, kseries, bookChart, dirty }
 };
 
-function startMarket(sym) {
-  if (market.ws) {
-    market.ws.onclose = null;
-    market.ws.close();
+function candleKey(sym, tf) {
+  return `trade:${tf}:${sym}:a30:p2:p30`;  // 聚合 2-30 天期
+}
+
+function initKChart(sym) {
+  const el = $(`kchart-${sym}`);
+  const chart = LightweightCharts.createChart(el, {
+    autoSize: true,
+    layout: { background: { color: "transparent" }, textColor: chartColors.text },
+    grid: { vertLines: { color: chartColors.grid }, horzLines: { color: chartColors.grid } },
+    timeScale: { timeVisible: true, borderColor: chartColors.grid },
+    // 對數刻度：放貸利率偶爾飆漲數十倍（如年化 1000%+），線性刻度會把平時區間壓扁
+    rightPriceScale: { borderColor: chartColors.grid,
+                       mode: LightweightCharts.PriceScaleMode.Logarithmic },
+    localization: { priceFormatter: (v) => v.toFixed(2) + "%" },
+  });
+  const series = chart.addCandlestickSeries({
+    upColor: chartColors.good, downColor: chartColors.bad,
+    wickUpColor: chartColors.good, wickDownColor: chartColors.bad,
+    borderVisible: false,
+    priceFormat: { type: "custom", formatter: (v) => v.toFixed(2) + "%", minMove: 0.01 },
+  });
+  return { chart, series };
+}
+
+// Bitfinex candle 陣列順序：[MTS, OPEN, CLOSE, HIGH, LOW, VOLUME]（close 在 high 前！）
+function mapCandle(c) {
+  return { time: c[0] / 1000, open: dailyToApy(c[1]), close: dailyToApy(c[2]),
+           high: dailyToApy(c[3]), low: dailyToApy(c[4]) };
+}
+
+function startMarket() {
+  if (market.ws) { market.ws.onclose = null; market.ws.close(); }
+  market.chan = {};
+  for (const { sym } of SYMBOLS) {
+    const prev = market.states[sym];
+    market.states[sym] = {
+      tf: prev?.tf || DEFAULT_TF, ticker: null, trades: [], book: [],
+      candleChanId: null,
+      kchart: prev?.kchart, kseries: prev?.kseries, bookChart: prev?.bookChart,
+      dirty: false,
+    };
+    if (!market.states[sym].kseries) {
+      const { chart, series } = initKChart(sym);
+      market.states[sym].kchart = chart;
+      market.states[sym].kseries = series;
+    }
   }
-  Object.assign(market, { chan: {}, trades: [], ticker: null, book: [], dirty: false });
 
   const ws = new WebSocket(WS_URL);
   market.ws = ws;
 
   ws.onopen = () => {
-    ws.send(JSON.stringify({ event: "subscribe", channel: "ticker", symbol: sym }));
-    ws.send(JSON.stringify({ event: "subscribe", channel: "trades", symbol: sym }));
-    ws.send(JSON.stringify({ event: "subscribe", channel: "book", symbol: sym,
-                             prec: "P0", len: "100" }));
+    for (const { sym } of SYMBOLS) {
+      ws.send(JSON.stringify({ event: "subscribe", channel: "ticker", symbol: sym }));
+      ws.send(JSON.stringify({ event: "subscribe", channel: "trades", symbol: sym }));
+      ws.send(JSON.stringify({ event: "subscribe", channel: "book", symbol: sym,
+                               prec: "P0", len: "100" }));
+      ws.send(JSON.stringify({ event: "subscribe", channel: "candles",
+                               key: candleKey(sym, market.states[sym].tf) }));
+    }
   };
 
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (!Array.isArray(msg)) {
-      if (msg.event === "subscribed") market.chan[msg.chanId] = msg.channel;
+      if (msg.event === "subscribed") {
+        if (msg.channel === "candles") {
+          const sym = msg.key.split(":")[2];
+          market.chan[msg.chanId] = { sym, channel: "candles" };
+          market.states[sym].candleChanId = msg.chanId;
+        } else {
+          market.chan[msg.chanId] = { sym: msg.symbol, channel: msg.channel };
+        }
+      } else if (msg.event === "unsubscribed") {
+        delete market.chan[msg.chanId];
+      }
       return;
     }
     const [chanId, payload, extra] = msg;
     if (payload === "hb") return;
-    const channel = market.chan[chanId];
-
-    if (channel === "ticker" && Array.isArray(payload)) {
-      market.ticker = payload;
-      market.dirty = true;
-    } else if (channel === "trades") {
-      if (Array.isArray(payload) && Array.isArray(payload[0])) {
-        // 快照：[[ID, MTS, AMOUNT, RATE, PERIOD], ...]
-        market.trades = payload.map((t) => ({ mts: t[1], rate: t[3] }));
-      } else if (payload === "fte" && Array.isArray(extra)) {
-        market.trades.unshift({ mts: extra[1], rate: extra[3] });
-        market.trades = market.trades.slice(0, 250);
-      }
-      market.dirty = true;
-    } else if (channel === "book") {
-      if (Array.isArray(payload) && Array.isArray(payload[0])) {
-        market.book = payload;            // 快照
-      } else if (Array.isArray(payload)) {
-        applyBookUpdate(payload);          // 增量更新 [RATE, PERIOD, COUNT, AMOUNT]
-      }
-      market.dirty = true;
-    }
+    const meta = market.chan[chanId];
+    if (!meta) return;
+    handleChannel(meta.sym, meta.channel, payload, extra);
   };
 
-  ws.onclose = () => setTimeout(() => startMarket($("symbolSelect").value), 3000);
+  ws.onclose = () => setTimeout(startMarket, 3000);
   ws.onerror = () => { $("lastUpdate").textContent = "連線中斷，重連中…"; };
 }
 
-function applyBookUpdate([rate, period, count, amount]) {
-  const idx = market.book.findIndex((e) => e[0] === rate && e[1] === period);
-  if (count > 0) {
-    if (idx >= 0) market.book[idx] = [rate, period, count, amount];
-    else market.book.push([rate, period, count, amount]);
-  } else if (idx >= 0) {
-    market.book.splice(idx, 1);            // count=0 = 移除該價位
+function handleChannel(sym, channel, payload, extra) {
+  const st = market.states[sym];
+  if (!st) return;
+
+  if (channel === "ticker" && Array.isArray(payload)) {
+    st.ticker = payload;
+    st.dirty = true;
+  } else if (channel === "trades") {
+    if (Array.isArray(payload) && Array.isArray(payload[0])) {
+      st.trades = payload.map((t) => ({ mts: t[1], rate: t[3] }));
+    } else if (payload === "fte" && Array.isArray(extra)) {
+      st.trades.unshift({ mts: extra[1], rate: extra[3] });
+      st.trades = st.trades.slice(0, 250);
+    }
+    st.dirty = true;
+  } else if (channel === "book") {
+    if (Array.isArray(payload) && Array.isArray(payload[0])) {
+      st.book = payload;
+    } else if (Array.isArray(payload)) {
+      applyBookUpdate(st, payload);
+    }
+    st.dirty = true;
+  } else if (channel === "candles") {
+    if (Array.isArray(payload) && Array.isArray(payload[0])) {
+      // 快照：去重 + 由舊到新
+      const seen = new Map();
+      for (const c of payload) seen.set(c[0], c);
+      const data = [...seen.values()].sort((a, b) => a[0] - b[0]).map(mapCandle);
+      st.kseries.setData(data);
+      st.kchart.timeScale().fitContent();
+    } else if (Array.isArray(payload) && typeof payload[0] === "number") {
+      st.kseries.update(mapCandle(payload));
+    }
   }
 }
+
+function applyBookUpdate(st, [rate, period, count, amount]) {
+  const idx = st.book.findIndex((e) => e[0] === rate && e[1] === period);
+  if (count > 0) {
+    if (idx >= 0) st.book[idx] = [rate, period, count, amount];
+    else st.book.push([rate, period, count, amount]);
+  } else if (idx >= 0) {
+    st.book.splice(idx, 1);
+  }
+}
+
+function switchTf(sym, tf) {
+  const st = market.states[sym];
+  if (!st || st.tf === tf) return;
+  st.tf = tf;
+  document.querySelectorAll(`#tfs-${sym} .tf`).forEach((b) =>
+    b.classList.toggle("active", b.dataset.tf === tf));
+  if (market.ws?.readyState === WebSocket.OPEN) {
+    if (st.candleChanId != null) {
+      market.ws.send(JSON.stringify({ event: "unsubscribe", chanId: st.candleChanId }));
+      st.candleChanId = null;
+    }
+    market.ws.send(JSON.stringify({ event: "subscribe", channel: "candles",
+                                    key: candleKey(sym, tf) }));
+  }
+}
+
+// ═══════════ 市場區渲染（每 2 秒，K 線除外）═══════════
 
 function renderMarket() {
-  if (!market.dirty) return;
-  market.dirty = false;
+  let updated = false;
+  for (const { sym } of SYMBOLS) {
+    const st = market.states[sym];
+    if (!st?.dirty) continue;
+    st.dirty = false;
+    updated = true;
 
-  if (market.ticker) {
-    // [FRR, BID, BID_PERIOD, BID_SIZE, ASK, ASK_PERIOD, ASK_SIZE, Δ, Δ%, LAST, ...]
-    $("mFrr").textContent = pct(dailyToApy(market.ticker[0]));
-    $("mAsk").textContent = pct(dailyToApy(market.ticker[4]));
-    $("mLast").textContent = pct(dailyToApy(market.ticker[9]));
+    if (st.ticker) {
+      $(`frr-${sym}`).textContent = pct(dailyToApy(st.ticker[0]));
+      $(`ask-${sym}`).textContent = pct(dailyToApy(st.ticker[4]));
+      $(`last-${sym}`).textContent = pct(dailyToApy(st.ticker[9]));
+    }
+    if (st.trades.length) {
+      $(`iqm-${sym}`).textContent = pct(dailyToApy(iqm(st.trades.map((t) => t.rate))));
+      const hourAgo = Date.now() - 3600_000;
+      const hr = st.trades.filter((t) => t.mts >= hourAgo).map((t) => t.rate);
+      $(`high-${sym}`).textContent = hr.length ? pct(dailyToApy(Math.max(...hr))) : "—";
+    }
+    if (st.book.length) drawBookChart(sym, st);
   }
-  if (market.trades.length) {
-    $("mIqm").textContent = pct(dailyToApy(iqm(market.trades.map((t) => t.rate))));
-    const hourAgo = Date.now() - 3600_000;
-    const hr = market.trades.filter((t) => t.mts >= hourAgo).map((t) => t.rate);
-    $("mHigh").textContent = hr.length ? pct(dailyToApy(Math.max(...hr))) : "—";
-    drawTradesChart(market.trades);
+  if (updated) {
+    $("lastUpdate").textContent =
+      "更新 " + new Date().toLocaleTimeString("zh-TW", { hour12: false });
   }
-  if (market.book.length) drawBookChart(market.book);
-  $("lastUpdate").textContent =
-    "更新 " + new Date().toLocaleTimeString("zh-TW", { hour12: false });
 }
 
-function drawTradesChart(trades) {
-  const pts = trades.slice().reverse().map((t) => ({ x: t.mts, y: dailyToApy(t.rate) }));
-  if (tradesChart) {
-    tradesChart.data.datasets[0].data = pts;
-    tradesChart.update("none");
-    return;
-  }
-  tradesChart = new Chart($("tradesChart"), {
-    type: "line",
-    data: { datasets: [{ data: pts, borderColor: chartColors.line,
-                         pointRadius: 0, borderWidth: 1.5, tension: 0.2 }] },
-    options: {
-      animation: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { type: "linear", ticks: {
-          maxTicksLimit: 6,
-          callback: (v) => new Date(v).toLocaleTimeString("zh-TW",
-            { hour: "2-digit", minute: "2-digit", hour12: false }),
-        }},
-        y: { ticks: { callback: (v) => v.toFixed(1) + "%" } },
-      },
-    },
-  });
-}
-
-function drawBookChart(book) {
-  // funding book：amount > 0 = 放貸方掛單（ask）
-  const asks = book.filter((e) => e[3] > 0)
+function drawBookChart(sym, st) {
+  const asks = st.book.filter((e) => e[3] > 0)
     .map((e) => ({ rate: e[0], amount: e[3] }))
     .sort((a, b) => a.rate - b.rate);
   let cum = 0;
   const pts = asks.map((a) => { cum += a.amount; return { x: dailyToApy(a.rate), y: cum }; });
-  if (bookChart) {
-    bookChart.data.datasets[0].data = pts;
-    bookChart.update("none");
+  if (st.bookChart) {
+    st.bookChart.data.datasets[0].data = pts;
+    st.bookChart.update("none");
     return;
   }
-  bookChart = new Chart($("bookChart"), {
+  st.bookChart = new Chart($(`book-${sym}`), {
     type: "line",
-    data: { datasets: [{ data: pts, borderColor: chartColors.good,
+    data: { datasets: [{ data: pts, borderColor: SYMBOL_COLORS[sym] || chartColors.good,
                          fill: true, backgroundColor: "rgba(76,175,128,.15)",
                          pointRadius: 0, stepped: true }] },
     options: {
@@ -225,6 +333,8 @@ async function tryUnlock(token, silent = false) {
   return true;
 }
 
+let earningsChart, anchorChart;
+
 function renderDashboard(d) {
   const statuses = d.statuses || [];
   const first = statuses[0] || {};
@@ -272,10 +382,7 @@ function renderSymbolTable(statuses) {
     : `<tr><td colspan="5" class="muted">機器人還沒回報</td></tr>`;
 }
 
-const SYMBOL_COLORS = { fUSD: "#4fc3f7", fUST: "#4caf80", USD: "#4fc3f7", UST: "#4caf80" };
-
 function drawEarningsChart(earnings) {
-  // 依幣別分組 → 堆疊長條圖
   const dates = [...new Set(earnings.map((e) => e.date))].sort();
   const currencies = [...new Set(earnings.map((e) => e.currency))];
   const datasets = currencies.map((cur) => ({
@@ -296,7 +403,6 @@ function drawEarningsChart(earnings) {
 }
 
 function drawAnchorChart(snaps) {
-  // 依幣別分組 → 多條線
   const symbols = [...new Set(snaps.map((s) => s.symbol))];
   const datasets = symbols.map((sym) => ({
     label: sym,
@@ -357,14 +463,13 @@ $("lockBtn").addEventListener("click", () => {
   $("dashPanel").classList.add("hidden");
   $("lockPanel").classList.remove("hidden");
 });
-$("symbolSelect").addEventListener("change", () => startMarket($("symbolSelect").value));
 
-startMarket("fUSD");
-setInterval(renderMarket, 2000);  // 圖表最多每 2 秒重繪，避免高頻更新吃資源
+buildMarketDOM();
+startMarket();
+setInterval(renderMarket, 2000);  // 卡片/深度圖最多每 2 秒重繪；K 線即時更新
 
 const saved = localStorage.getItem(TOKEN_KEY);
 if (saved) tryUnlock(saved, true);
-// 個人區每 5 分鐘自動刷新
 setInterval(() => {
   const t = localStorage.getItem(TOKEN_KEY);
   if (t && !$("dashPanel").classList.contains("hidden")) tryUnlock(t, true);
