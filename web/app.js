@@ -79,8 +79,8 @@ function buildMarketDOM() {
           <div class="chart-head">
             <h3>掛單簿深度</h3>
             <div class="tf-btns" id="bks-${sym}">
-              ${["全部", "2天", "3-30天", ">30天", "借款方"].map((bk) =>
-                `<button class="tf bk ${bk === "全部" ? "active" : ""}"
+              ${["2天", "3-30天", ">30天", "借款方"].map((bk) =>
+                `<button class="tf bk ${bk !== "借款方" ? "active" : ""}"
                   data-sym="${sym}" data-bk="${bk}">${bk}</button>`).join("")}
             </div>
           </div>
@@ -96,9 +96,9 @@ function buildMarketDOM() {
   document.querySelectorAll(".tf.bk").forEach((btn) =>
     btn.addEventListener("click", () => {
       const { sym, bk } = btn.dataset;
-      market.states[sym].bookFilter = bk;
-      document.querySelectorAll(`#bks-${sym} .tf`).forEach((b) =>
-        b.classList.toggle("active", b.dataset.bk === bk));
+      const sel = market.states[sym].bookSel;
+      sel.has(bk) ? sel.delete(bk) : sel.add(bk);  // 複選開關
+      btn.classList.toggle("active", sel.has(bk));
       market.states[sym].dirty = true;
     }));
 }
@@ -122,9 +122,7 @@ function initKChart(sym) {
     layout: { background: { color: "transparent" }, textColor: chartColors.text },
     grid: { vertLines: { color: chartColors.grid }, horzLines: { color: chartColors.grid } },
     timeScale: { timeVisible: true, borderColor: chartColors.grid },
-    // 對數刻度：放貸利率偶爾飆漲數十倍（如年化 1000%+），線性刻度會把平時區間壓扁
-    rightPriceScale: { borderColor: chartColors.grid,
-                       mode: LightweightCharts.PriceScaleMode.Logarithmic },
+    rightPriceScale: { borderColor: chartColors.grid },
     // Normal 模式：十字線跟著滑鼠座標自由移動（預設會吸附到收盤價）
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     localization: { priceFormatter: (v) => v.toFixed(2) + "%" },
@@ -143,7 +141,7 @@ function initKChart(sym) {
       el.textContent = "（滑鼠移到 K 棒上顯示開高低收）";
       return;
     }
-    const t = new Date(param.time * 1000).toLocaleString("zh-TW",
+    const t = new Date((param.time - TZ_SHIFT) * 1000).toLocaleString("zh-TW",
       { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
     const color = d.close >= d.open ? chartColors.good : chartColors.bad;
     el.innerHTML = `${t}｜開 ${d.open.toFixed(2)}%｜高 ${d.high.toFixed(2)}%｜` +
@@ -152,9 +150,12 @@ function initKChart(sym) {
   return { chart, series };
 }
 
+// lightweight-charts 的時間軸固定用 UTC 顯示，把時間戳平移成本地時區（如 UTC+8）
+const TZ_SHIFT = -new Date().getTimezoneOffset() * 60;
+
 // Bitfinex candle 陣列順序：[MTS, OPEN, CLOSE, HIGH, LOW, VOLUME]（close 在 high 前！）
 function mapCandle(c) {
-  return { time: c[0] / 1000, open: dailyToApy(c[1]), close: dailyToApy(c[2]),
+  return { time: c[0] / 1000 + TZ_SHIFT, open: dailyToApy(c[1]), close: dailyToApy(c[2]),
            high: dailyToApy(c[3]), low: dailyToApy(c[4]) };
 }
 
@@ -165,7 +166,7 @@ function startMarket() {
     const prev = market.states[sym];
     market.states[sym] = {
       tf: prev?.tf || DEFAULT_TF, pkey: prev?.pkey || DEFAULT_PKEY,
-      bookFilter: prev?.bookFilter || "全部",
+      bookSel: prev?.bookSel || new Set(["2天", "3-30天", ">30天"]),  // 預設不含借款方
       ticker: null, trades: [], book: [],
       candleChanId: null,
       kchart: prev?.kchart, kseries: prev?.kseries, bookChart: prev?.bookChart,
@@ -357,8 +358,7 @@ function drawBookChart(sym, st) {
     borderWidth: 1.5, borderDash: [5, 3],
   });
 
-  const f = st.bookFilter || "全部";
-  const datasets = all.filter((ds) => ds.data.length && (f === "全部" || ds.label === f));
+  const datasets = all.filter((ds) => ds.data.length && st.bookSel.has(ds.label));
 
   if (st.bookChart) {
     st.bookChart.data.datasets = datasets;
