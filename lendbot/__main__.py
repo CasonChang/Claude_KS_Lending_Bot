@@ -2,6 +2,7 @@
 
 --once：只跑一個循環就結束（測試用）
 """
+import socket
 import sys
 
 from .bfx_client import BfxClient
@@ -13,8 +14,24 @@ from .telegram_bot import TelegramBot
 
 log = get_logger()
 
+# 單一實例鎖：綁定本機 port，第二個實例會綁不到直接退出。
+# （多實例同時跑會重複推播、重複寫 DB、互搶 Telegram 更新）
+_LOCK_PORT = 47391
+
+
+def acquire_single_instance_lock() -> socket.socket:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", _LOCK_PORT))
+        s.listen(1)
+        return s
+    except OSError:
+        log.error("偵測到已有 lendbot 在跑（port %d 被占用），本實例退出", _LOCK_PORT)
+        sys.exit(1)
+
 
 def main():
+    lock = acquire_single_instance_lock()  # noqa: F841 程序存活期間持有
     cfg = load_config()
     client = BfxClient(cfg.env.bfx_key, cfg.env.bfx_secret)
     store = Store(cfg.env.supabase_url, cfg.env.supabase_key)
