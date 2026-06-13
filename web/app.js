@@ -535,6 +535,7 @@ function renderSuggested(statuses) {
 const CLOSED_PER_PAGE = 10;
 let closedAll = [];
 let closedRangeDays = 7;  // 預設近 7 天
+let closedReasons = new Set(["closed_early", "closed_matured"]);  // 預設兩種都顯示
 let closedPage = 0;
 
 function renderClosed(closed) {
@@ -546,7 +547,8 @@ function renderClosed(closed) {
 function renderClosedView() {
   const tbody = $("closedTable").querySelector("tbody");
   const cutoff = closedRangeDays ? Date.now() - closedRangeDays * 86400000 : 0;
-  const filtered = closedAll.filter((a) => new Date(a.ts).getTime() >= cutoff);
+  const filtered = closedAll.filter((a) =>
+    new Date(a.ts).getTime() >= cutoff && closedReasons.has(a.action));
 
   const pages = Math.max(1, Math.ceil(filtered.length / CLOSED_PER_PAGE));
   closedPage = Math.min(closedPage, pages - 1);
@@ -734,12 +736,27 @@ $("refreshBtn").addEventListener("click", async () => {
   btn.disabled = false;
 });
 
-// 已結束放貸的時間範圍切換
+// 已結束放貸的時間範圍切換（單選）
 document.querySelectorAll("#closedRange .tf").forEach((btn) =>
   btn.addEventListener("click", () => {
     document.querySelectorAll("#closedRange .tf").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     closedRangeDays = Number(btn.dataset.days);
+    closedPage = 0;
+    renderClosedView();
+  }));
+
+// 結束原因篩選（複選，預設兩種都開；至少留一個避免全空）
+document.querySelectorAll("#closedReason .tf").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    const r = btn.dataset.reason;
+    if (closedReasons.has(r) && closedReasons.size > 1) {
+      closedReasons.delete(r);
+      btn.classList.remove("active");
+    } else {
+      closedReasons.add(r);
+      btn.classList.add("active");
+    }
     closedPage = 0;
     renderClosedView();
   }));
