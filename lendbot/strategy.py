@@ -108,6 +108,12 @@ def choose_period(rate: float, scfg: dict) -> int:
 
 # ── 階梯掛單 ──────────────────────────────────────────────
 
+def floor2(x: float) -> float:
+    """金額無條件捨去到分。用四捨五入會把 87.578 進成 87.58，
+    各檔加總可能超過可用餘額，下單被拒（not enough balance）。"""
+    return int(x * 100) / 100
+
+
 @dataclass
 class OfferPlan:
     amount: float
@@ -136,7 +142,7 @@ def build_ladder(available: float, view: MarketView, scfg: dict) -> list[OfferPl
         # spike 時最後一檔改追近期最高成交利率
         if view.spike and i == len(ladder) - 1:
             rate = max(rate, view.recent_high * float(scfg.get("spike_discount", 0.95)))
-        rungs.append(OfferPlan(amount=round(amount, 2), rate=round(rate, 8),
+        rungs.append(OfferPlan(amount=floor2(amount), rate=round(rate, 8),
                                period=choose_period(rate, scfg)))
 
     # 太小的檔位由低利率往高利率合併（優先保住容易成交的低檔）
@@ -147,14 +153,14 @@ def build_ladder(available: float, view: MarketView, scfg: dict) -> list[OfferPl
         if amt < min_offer:
             carry = amt
             continue
-        merged.append(OfferPlan(amount=round(amt, 2), rate=plan.rate, period=plan.period))
+        merged.append(OfferPlan(amount=floor2(amt), rate=plan.rate, period=plan.period))
         carry = 0.0
     if carry >= min_offer and merged:
         last = merged[-1]
-        merged[-1] = OfferPlan(amount=round(last.amount + carry, 2),
+        merged[-1] = OfferPlan(amount=floor2(last.amount + carry),
                                rate=last.rate, period=last.period)
     if not merged and available >= min_offer:
-        merged = [OfferPlan(amount=round(available, 2), rate=rungs[0].rate,
+        merged = [OfferPlan(amount=floor2(available), rate=rungs[0].rate,
                             period=rungs[0].period)]
     return merged
 

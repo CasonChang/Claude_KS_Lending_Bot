@@ -532,12 +532,25 @@ class Engine:
         })
 
     def _cmd_go(self) -> str:
-        """把最新一輪的建議掛單真的送出（使用者明確確認，觀察模式也執行）。"""
+        """以「當下」的餘額與最新市場重算建議並真的送出（觀察模式也執行）。
+
+        不直接用上一輪算好的計畫：按下 /go 的瞬間餘額可能已經變了
+        （手動掛單佔住資金、剛成交等），用舊計畫會 not enough balance。
+        另留 $0.05 緩衝避免精度問題。"""
         if not self.has_auth:
             return "❌ 沒有 API key，無法下單"
         results = []
         for sym, st in self.states.items():
-            plans, st.last_plans = st.last_plans, []  # 取走避免重複執行
+            view = st.last_view
+            if view is None:
+                continue
+            try:
+                available = self.client.funding_available(sym[1:])
+            except BfxError as e:
+                results.append(f"❌ {sym} 查餘額失敗：{e}")
+                continue
+            plans = build_ladder(max(0.0, available - 0.05), view, self.scfg)
+            st.last_plans = []
             for p in plans:
                 try:
                     self.client.submit_offer(sym, p.amount, p.rate, p.period)
@@ -548,8 +561,8 @@ class Engine:
                 except BfxError as e:
                     results.append(f"❌ {sym} {p.amount:,.2f}：{e}")
         if not results:
-            return "目前沒有待執行的建議（可用資金不足 $150，或建議已被執行過）"
-        return "📌 已執行建議掛單：\n" + "\n".join(results)
+            return "目前兩個幣別的可用資金都不足 $150，沒有可掛的單"
+        return "📌 已執行掛單（依當下餘額與行情重算）：\n" + "\n".join(results)
 
     def _cmd_lend(self, args: str = "") -> str:
         """手動掛單：/lend fUSD 250 11.5 7（幣別 金額 年化% 天期）"""
