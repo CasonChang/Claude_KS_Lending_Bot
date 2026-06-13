@@ -557,10 +557,12 @@ function renderClosedView() {
         const d = a.detail || {};
         const early = a.action === "closed_early";
         const profit = closedProfit(d);
+        const heldPct = d.period ? Math.min(100, (d.held_days || 0) / d.period * 100) : 0;
+        const bar = `<span class="mini-bar"><span style="width:${heldPct}%"></span></span>`;
         return `<tr><td>${fmtDate(a.ts)}</td><td>${d.symbol || ""}</td>
           <td>$${(d.amount ?? 0).toLocaleString()}</td>
           <td>${(d.apy ?? 0).toFixed(2)}%</td>
-          <td>${(d.held_days ?? 0).toFixed(2)} / ${d.period} 天</td>
+          <td>${heldPct.toFixed(0)}% <span class="muted small">/ ${d.period}天</span> ${bar}</td>
           <td class="good">+$${profit.toFixed(4)}</td>
           <td><span class="badge ${early ? "warn" : "ok"}">${early ? "提前還款" : "到期歸還"}</span></td></tr>`;
       }).join("")

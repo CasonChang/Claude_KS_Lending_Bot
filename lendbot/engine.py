@@ -261,11 +261,18 @@ class Engine:
                                              timezone.utc).isoformat(),
         }, now_iso())
         if self.cfg.telegram.get("notify_closes", True):
-            held_str = (f"{held_days * 24:.1f} 小時" if held_days < 1
-                        else f"{held_days:.1f} 天")
+            # 直接用原始時間戳算，避免 held_days 四捨五入失真；不到 1 小時改用分鐘
+            held_minutes = (mts_close - mts_opening) / 60_000
+            if held_minutes < 60:
+                held_str = f"{held_minutes:.0f} 分鐘"
+            elif held_minutes < 1440:
+                held_str = f"{held_minutes / 60:.1f} 小時"
+            else:
+                held_str = f"{held_minutes / 1440:.1f} 天"
+            held_pct = held_days / period * 100 if period else 0
             self.tg.notify(f"💸 {sym} 放貸結束（{reason}）\n"
                            f"金額：{amount:,.2f} {sym[1:]}｜年化 {fmt_apy(rate)}\n"
-                           f"持有 {held_str} / {period} 天")
+                           f"持有 {held_str}（放滿 {period} 天的 {held_pct:.0f}%）")
 
     def _reconcile_closed_history(self, sym: str, st: SymbolState):
         """用已結束放貸的歷史回補輪詢盲區（成交後快速歸還、兩次輪詢間來去的單）。"""
