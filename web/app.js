@@ -509,12 +509,15 @@ function renderCredits(statuses) {
     ? rows.map((c) => {
         const remainPct = c.period ? Math.max(0, c.remaining_days / c.period) : 0;
         const bar = `<span class="mini-bar"><span style="width:${(1 - remainPct) * 100}%"></span></span>`;
+        // 放滿預估報酬：放好放滿整個天期能拿到的淨利息（扣 15% 手續費）
+        const full = (c.amount || 0) * (c.rate || 0) * (c.period || 0) * (1 - FUNDING_FEE);
         return `<tr><td>${c.symbol}</td><td>$${c.amount.toLocaleString()}</td>
           <td>${pct(c.apy ?? dailyToApy(c.rate))}</td><td>${c.period} 天</td>
+          <td class="good">+$${full.toFixed(4)}</td>
           <td>${c.opened ? fmtDate(c.opened) : "—"}</td>
           <td>${fmtRemaining(c.opened, c.period)} ${bar}</td></tr>`;
       }).join("")
-    : `<tr><td colspan="6" class="muted">目前沒有放貸中的部位</td></tr>`;
+    : `<tr><td colspan="7" class="muted">目前沒有放貸中的部位</td></tr>`;
 }
 
 function renderSuggested(statuses) {
