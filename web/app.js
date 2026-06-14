@@ -669,7 +669,17 @@ function drawDailyApyChart(earnings) {
   });
 }
 
+let anchorSnaps = [];      // 後端給的近 7 天降採樣資料
+let anchorRangeDays = 3;   // 預設顯示近 3 天
+
 function drawAnchorChart(snaps) {
+  anchorSnaps = snaps || [];
+  renderAnchorChart();
+}
+
+function renderAnchorChart() {
+  const cutoff = Date.now() - anchorRangeDays * 86400000;
+  const snaps = anchorSnaps.filter((s) => new Date(s.ts).getTime() >= cutoff);
   const symbols = [...new Set(snaps.map((s) => s.symbol))];
   const datasets = symbols.map((sym) => ({
     label: sym,
@@ -678,6 +688,7 @@ function drawAnchorChart(snaps) {
     borderColor: SYMBOL_COLORS[sym] || chartColors.warn,
     pointRadius: 0, borderWidth: 1.5, tension: 0.2,
   }));
+  const multiDay = anchorRangeDays > 1;  // 跨日就在刻度補上日期
   anchorChart?.destroy();
   anchorChart = new Chart($("anchorChart"), {
     type: "line",
@@ -686,9 +697,15 @@ function drawAnchorChart(snaps) {
       plugins: { legend: { display: symbols.length > 1 } },
       scales: {
         x: { type: "linear", ticks: {
-          maxTicksLimit: 6,
-          callback: (v) => new Date(v).toLocaleTimeString("zh-TW",
-            { hour: "2-digit", minute: "2-digit", hour12: false }),
+          maxTicksLimit: multiDay ? 8 : 6,
+          callback: (v) => {
+            const d = new Date(v);
+            const t = d.toLocaleTimeString("zh-TW",
+              { hour: "2-digit", minute: "2-digit", hour12: false });
+            return multiDay
+              ? `${d.getMonth() + 1}/${d.getDate()} ${t}`
+              : t;
+          },
         }},
         y: { ticks: { callback: (v) => v.toFixed(1) + "%" } },
       },
@@ -766,6 +783,15 @@ document.querySelectorAll("#closedReason .tf").forEach((btn) =>
     }
     closedPage = 0;
     renderClosedView();
+  }));
+
+// 錨點年化圖的時間範圍切換（單選，純前端篩選已抓的 7 天資料）
+document.querySelectorAll("#anchorRange .tf").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#anchorRange .tf").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    anchorRangeDays = Number(btn.dataset.days);
+    renderAnchorChart();
   }));
 
 buildMarketDOM();

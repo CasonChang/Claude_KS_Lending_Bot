@@ -122,13 +122,16 @@ begin
       where e.date > current_date - interval '30 days'
     ),
     'snapshots', (
+      -- 近 7 天，每幣別每 10 分鐘取最後一筆（降採樣，避免 payload 過大）
       select coalesce(jsonb_agg(jsonb_build_object(
                'ts', s.ts, 'symbol', s.symbol, 'anchor_apy', s.anchor_apy,
                'frr', s.frr, 'spike', s.spike) order by s.ts), '[]'::jsonb)
       from (
-        select * from market_snapshots
-        where ts > now() - interval '24 hours'
-        order by ts desc limit 576
+        select distinct on (symbol, floor(extract(epoch from ts) / 600))
+               ts, symbol, anchor_apy, frr, spike
+        from market_snapshots
+        where ts > now() - interval '7 days'
+        order by symbol, floor(extract(epoch from ts) / 600), ts desc
       ) s
     ),
     'recent_actions', (
