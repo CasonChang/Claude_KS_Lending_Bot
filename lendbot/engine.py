@@ -175,8 +175,9 @@ class Engine:
                  fmt_apy(view.anchor), " 🔥SPIKE" if view.spike else "")
         self.store.save_market_snapshot(sym, view, ts)
 
-        # 2) spike 警報（每幣別 30 分鐘冷卻）
-        if view.spike and self.cfg.telegram.get("notify_spike", True):
+        # 2) spike 警報（每幣別 30 分鐘冷卻）。真實模式下機器人會自己追高掛單，
+        #    此推播只是行動提示 → 僅在觀察模式（dry_run）才發。
+        if view.spike and self.dry_run and self.cfg.telegram.get("notify_spike", True):
             if time.time() - st.last_spike_notify > 1800:
                 st.last_spike_notify = time.time()
                 self.tg.notify(f"🔥 {sym} 利率飆漲！近 15 分最高成交年化 "
