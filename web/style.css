@@ -126,3 +126,28 @@ tr.total-row td { font-weight: 700; border-top: 2px solid var(--border); }
 .error { color: var(--bad); margin-top: 8px; }
 .hidden { display: none; }
 footer { margin-top: 28px; text-align: center; }
+
+/* ── 手機 RWD：寬表格在自己的框內橫向捲動，不撐爆整頁 ── */
+@media (max-width: 640px) {
+  body { padding: 10px; }
+  h1 { font-size: 1.15rem; }
+  h2 { font-size: 1rem; margin: 18px 0 10px; }
+  .sym-block, .chart-box { padding: 10px; }
+
+  /* 表格容器可橫向捲動；表格本身用內容寬度，欄位不再被擠壓換行 */
+  .chart-box { overflow-x: auto; }
+  .chart-box > table { width: auto; min-width: 100%; }
+  th, td { padding: 7px 8px; white-space: nowrap; }
+  table { font-size: 0.8rem; }
+
+  /* 卡片一行兩張，數字略縮 */
+  .cards { grid-template-columns: 1fr 1fr; }
+  .card .value { font-size: 1.1rem; }
+
+  /* 篩選/時框按鈕在小螢幕收緊一點 */
+  .closed-filters { gap: 8px; }
+  .tf-btns .tf { padding: 3px 8px; font-size: 0.74rem; }
+
+  /* chart-head 標題與按鈕直向堆疊，避免並排擠出界 */
+  .chart-head { flex-direction: column; align-items: flex-start; gap: 6px; }
+}
