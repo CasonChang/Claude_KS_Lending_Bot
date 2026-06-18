@@ -78,6 +78,17 @@ create table if not exists app_settings (
   value text not null
 );
 
+-- 資金變動（入金/出金/兌換，從 Bitfinex ledger 偵測；id = ledger entry id 去重）
+create table if not exists capital_flows (
+  id bigint primary key,
+  ts timestamptz not null,
+  currency text not null,
+  amount double precision not null,
+  kind text not null,            -- 入金 / 出金 / 兌換
+  description text
+);
+create index if not exists idx_capital_flows_ts on capital_flows (ts desc);
+
 -- ── 安全：全部開 RLS、不給 anon 任何 policy（= 拒絕直接存取）──
 -- 機器人用 service_role key 寫入，會繞過 RLS。
 alter table market_snapshots  enable row level security;
@@ -86,6 +97,7 @@ alter table credits_snapshots enable row level security;
 alter table earnings          enable row level security;
 alter table bot_status        enable row level security;
 alter table app_settings      enable row level security;
+alter table capital_flows     enable row level security;
 
 -- ── 設定你的 Dashboard 私人 token ──────────────────────────
 -- ⚠️ 把 'CHANGE_ME_TO_YOUR_SECRET_TOKEN' 改成你自己的密碼再執行！
@@ -148,6 +160,13 @@ begin
         where action in ('closed_matured', 'closed_early')
         order by ts desc limit 500   -- 前端做近1/7/30天篩選+分頁，給足歷史量
       ) a
+    ),
+    'capital_flows', (
+      select coalesce(jsonb_agg(to_jsonb(f) order by f.ts desc), '[]'::jsonb)
+      from (
+        select ts, currency, amount, kind, description from capital_flows
+        order by ts desc limit 50
+      ) f
     )
   );
 end;

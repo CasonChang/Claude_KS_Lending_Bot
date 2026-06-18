@@ -48,6 +48,8 @@ button:hover { filter: brightness(1.1); }
 .card .label { color: var(--muted); font-size: 0.78rem; margin-bottom: 6px; }
 .card .value { font-size: 1.25rem; font-weight: 700; }
 .value.good { color: var(--good); }
+.good { color: var(--good); }
+.bad { color: var(--bad); }
 
 .charts { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
 @media (max-width: 760px) { .charts { grid-template-columns: 1fr; } }

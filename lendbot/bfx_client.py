@@ -228,3 +228,17 @@ class BfxClient:
                             amount=float(e[5]), balance=float(e[6]),
                             description=str(e[8] or ""))
                 for e in d]
+
+    def ledger_all(self, currency: str, start_mts: int | None = None,
+                   limit: int = 100) -> list[LedgerEntry]:
+        """完整帳本（不過濾 category）：含入金/出金/兌換/轉帳/利息等。
+
+        給資金變動偵測用——呼叫端依 description 自行分類。"""
+        body: dict = {"limit": limit}
+        if start_mts:
+            body["start"] = start_mts
+        d = self._post_auth(f"auth/r/ledgers/{currency}/hist", body)
+        return [LedgerEntry(id=int(e[0]), currency=e[1], mts=int(e[3]),
+                            amount=float(e[5]), balance=float(e[6]),
+                            description=str(e[8] or ""))
+                for e in d]

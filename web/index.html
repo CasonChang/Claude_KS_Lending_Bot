@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Bitfinex 放貸 Dashboard</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=20260618">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -100,6 +100,10 @@
       <div class="pager" id="closedPager"></div>
     </div>
     <div class="chart-box">
+      <h3>資金變動 <span class="muted small">（入金／出金／USD↔UST 兌換，從 Bitfinex 帳本自動偵測）</span></h3>
+      <table id="capitalTable"><thead><tr><th>時間</th><th>類型</th><th>幣別</th><th>金額</th><th>說明</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="chart-box">
       <h3>近期動作</h3>
       <table id="actionsTable"><thead><tr><th>時間</th><th>動作</th><th>內容</th></tr></thead><tbody></tbody></table>
     </div>
@@ -109,6 +113,6 @@
 <footer class="muted small">資料僅供參考，放貸有風險。市場數據：Bitfinex 公開 API｜個人數據：Supabase</footer>
 
 <script src="config.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=20260618"></script>
 </body>
 </html>

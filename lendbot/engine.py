@@ -31,6 +31,29 @@ def fmt_apy(daily_rate: float) -> str:
     return f"{daily_to_apy(daily_rate) * 100:.2f}%"
 
 
+def classify_flow(description: str, amount: float) -> str | None:
+    """把 Bitfinex ledger 描述分類成資金變動類型，回 '入金'/'出金'/'兌換' 或 None（略過）。
+
+    只認 economically meaningful 的；利息（已由 earnings 處理）、聯盟回饋、兌換零頭、
+    錢包內部轉帳（會成對抵銷、非真實增減）都略過。"""
+    d = description.lower()
+    if abs(amount) < 0.01:
+        return None
+    if "margin funding payment" in d:        # 放貸利息，另由 earnings 記
+        return None
+    if "affiliate rebate" in d or "settlement" in d:
+        return None
+    if "transfer of" in d:                   # 自己錢包間搬移，純 plumbing
+        return None
+    if "deposit" in d:
+        return "入金"
+    if "withdrawal" in d:
+        return "出金"
+    if "exchange" in d and " for " in d:     # 例：Exchange 3000 UST for USD @ ...
+        return "兌換"
+    return None
+
+
 @dataclass
 class SimAccount:
     """模擬帳戶（無 API key 時）：掛單若利率 <= 近期最高成交利率就視為成交。"""
@@ -87,6 +110,7 @@ class Engine:
 
         self.paused = False
         self.last_earnings_sync = 0.0
+        self.last_capital_sync = 0.0
         self.last_report_date = ""
         self.last_rebalance_notify = 0.0
         self.last_rebalance_check = 0.0
@@ -139,9 +163,14 @@ class Engine:
 
         self._maybe_rebalance_alert()
 
-        # 收益同步（每小時）+ 每日總結 + 舊資料清理（每天）
+        # 收益同步（每小時）+ 資金變動偵測（每小時）+ 每日總結 + 舊資料清理（每天）
         if self.has_auth and time.time() - self.last_earnings_sync > 3600:
             self._sync_earnings()
+        if self.has_auth and time.time() - self.last_capital_sync > 3600:
+            try:
+                self._sync_capital_flows()
+            except Exception:
+                log.exception("資金變動同步失敗")
         self._maybe_daily_report()
         if self.cycle_count % max(1, int(1440 / self.cfg.cycle_minutes)) == 1:
             self.store.prune_old()
@@ -485,6 +514,38 @@ class Engine:
                 self.store.save_earning(d, currency, amt, latest_balance.get(d))
             log.info("%s 收益同步完成：%d 天", currency, len(daily))
 
+    def _sync_capital_flows(self):
+        """偵測入金/出金/兌換並寫入 capital_flows（id 去重）；首次見到的事件推播 Telegram。"""
+        self.last_capital_sync = time.time()
+        start = int((datetime.now(TZ) - timedelta(days=3)).timestamp() * 1000)
+        new_events = []
+        for sym in self.cfg.symbols:
+            currency = sym[1:]
+            try:
+                entries = self.client.ledger_all(currency, start_mts=start, limit=100)
+            except BfxError as e:
+                log.warning("%s 帳本同步失敗: %s", currency, e)
+                continue
+            for e in entries:
+                kind = classify_flow(e.description, e.amount)
+                if not kind:
+                    continue
+                exists = self.store.select("capital_flows",
+                                           {"id": f"eq.{e.id}", "select": "id", "limit": "1"})
+                ts_iso = datetime.fromtimestamp(e.mts / 1000, timezone.utc).isoformat()
+                saved = self.store.save_capital_flow(
+                    e.id, ts_iso, currency, e.amount, kind, e.description)
+                # 只有「寫入成功且 DB 原本沒有」才算新事件 → 表不存在/寫失敗時不會每小時洗版
+                if saved and not exists:
+                    new_events.append((kind, currency, e.amount, e.description))
+        if len(new_events) > 5:   # 首次回填可能一次很多，給總結就好不洗版
+            self.tg.notify(f"💰 偵測到 {len(new_events)} 筆資金變動（入金/出金/兌換），詳見 Dashboard")
+        else:
+            for kind, currency, amount, desc in new_events:
+                self.tg.notify(f"💰 資金變動（{kind}）\n{amount:+,.2f} {currency}\n{desc[:80]}")
+        if new_events:
+            log.info("資金變動偵測：新增 %d 筆", len(new_events))
+
     def _earnings_summary(self) -> str:
         if not self.has_auth:
             return "模擬模式沒有真實收益紀錄"
@@ -632,6 +693,14 @@ class Engine:
                            f"{net_yield['UST']:.1f}%，兩者相當（本金不同造成的絕對利息差非真實差異）")
         if obs:
             lines.append("📝 " + "；".join(obs))
+
+        flows = self.store.select("capital_flows", {
+            "and": f"(ts.gte.{to_z(y_start)},ts.lt.{to_z(y_end)})",
+            "order": "ts.asc", "limit": "50",
+        })
+        if flows:
+            fl = "；".join(f"{f['kind']} {f['amount']:+,.0f} {f['currency']}" for f in flows)
+            lines.append("💰 資金變動：" + fl)
         return "\n".join(lines)
 
     def _maybe_daily_report(self):

@@ -99,6 +99,14 @@ class Store:
     def update_bot_status(self, symbol: str, status: dict) -> bool:
         return self.upsert("bot_status", {"symbol": symbol, **status}, on_conflict="symbol")
 
+    def save_capital_flow(self, ledger_id: int, ts_iso: str, currency: str,
+                          amount: float, kind: str, description: str) -> bool:
+        """資金變動（入金/出金/兌換），以 Bitfinex ledger id 為主鍵去重。"""
+        return self.upsert("capital_flows", {
+            "id": ledger_id, "ts": ts_iso, "currency": currency,
+            "amount": round(amount, 6), "kind": kind, "description": description,
+        }, on_conflict="id")
+
     def prune_old(self, days_snapshots: int = 30, days_actions: int = 90) -> None:
         """清掉過舊資料，避免免費額度爆掉。"""
         from datetime import datetime, timedelta, timezone

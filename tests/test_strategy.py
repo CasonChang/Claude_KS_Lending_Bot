@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lendbot.bfx_client import BookEntry, FundingTicker, FundingTrade, Offer
+from lendbot.engine import classify_flow
 from lendbot.strategy import (MarketView, analyze_market, apy_to_daily,
                               build_ladder, choose_period, daily_to_apy, iqm,
                               should_cancel)
@@ -221,3 +222,28 @@ def test_should_not_cancel_competitive_offer():
     offer = Offer(id=1, symbol="fUSD", mts_created=NOW - 60 * 60_000,
                   amount=200, rate=0.0003, period=2)
     assert not should_cancel(offer, view_with(0.0003), SCFG, NOW)
+
+
+# ── 資金變動分類器（用真實 Bitfinex ledger 描述）──
+def test_classify_flow_deposit():
+    assert classify_flow("Deposit (TETHERUSDTAVAX) #24330381 on wallet exchange", 3000.0) == "入金"
+
+def test_classify_flow_exchange():
+    assert classify_flow("Exchange 3000.005882 UST for USD @ 0.99753 on wallet exchange", 2992.6) == "兌換"
+
+def test_classify_flow_withdrawal():
+    assert classify_flow("Withdrawal #123 on wallet exchange", -500.0) == "出金"
+
+def test_classify_flow_skips_interest():
+    assert classify_flow("Margin Funding Payment on wallet funding", 0.0744) is None
+
+def test_classify_flow_skips_rebate_and_settlement():
+    assert classify_flow("Affiliate Rebate on wallet exchange", 0.0017) is None
+    assert classify_flow("Settlement @ 0.9996 on wallet exchange", 0.00001) is None
+
+def test_classify_flow_skips_internal_transfer():
+    # 錢包間轉帳會成對抵銷，非真實增減 → 略過
+    assert classify_flow("Transfer of 2992.79 USD from wallet Exchange to Deposit", 2992.79) is None
+
+def test_classify_flow_skips_dust():
+    assert classify_flow("Deposit something tiny", 0.005) is None

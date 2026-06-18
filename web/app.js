@@ -500,6 +500,7 @@ function renderDashboard(d) {
   renderOffers(statuses);
   renderSuggested(statuses);
   renderClosed(d.closed_credits || []);
+  renderCapitalFlows(d.capital_flows || []);
   renderActions(d.recent_actions || []);
 }
 
@@ -734,6 +735,22 @@ function renderActions(actions) {
         return `<tr><td>${t}</td><td>${a.action}</td><td>${det}</td></tr>`;
       }).join("")
     : `<tr><td colspan="3" class="muted">還沒有紀錄</td></tr>`;
+}
+
+function renderCapitalFlows(flows) {
+  const tbody = $("capitalTable").querySelector("tbody");
+  if (!flows || !flows.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">尚無資金變動紀錄（入金/出金/兌換）</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = flows.map((f) => {
+    const cls = f.amount >= 0 ? "good" : "bad";
+    const sign = f.amount >= 0 ? "+" : "";
+    const amt = sign + (+f.amount).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    return `<tr><td>${fmtDate(f.ts)}</td><td>${f.kind}</td><td>${f.currency}</td>
+      <td class="${cls}">${amt}</td>
+      <td class="muted small">${(f.description || "").slice(0, 50)}</td></tr>`;
+  }).join("");
 }
 
 // ═══════════ 初始化 ═══════════
