@@ -529,7 +529,7 @@ function renderCredits(statuses) {
     const remainPct = c.period ? Math.max(0, c.remaining_days / c.period) : 0;
     const bar = `<span class="mini-bar"><span style="width:${(1 - remainPct) * 100}%"></span></span>`;
     return `<tr><td>${c.symbol}</td><td>$${c.amount.toLocaleString()}</td>
-      <td>${pct(netApy(c.apy ?? dailyToApy(c.rate)))}</td><td>${c.period} 天</td>
+      <td>${pct(c.apy ?? dailyToApy(c.rate))}</td><td>${c.period} 天</td>
       <td class="good">+$${dailyIncome(c).toFixed(4)}</td>
       <td class="good">+$${fullIncome(c).toFixed(4)}</td>
       <td>${c.opened ? fmtDate(c.opened) : "—"}</td>
@@ -622,7 +622,7 @@ function renderSymbolTable(statuses) {
   const rows = statuses.map((s) => `<tr><td>${s.symbol}</td>
       <td>${money(walletTotal(s))}</td>
       <td>${money(s.total_lent)}</td>
-      <td>${pct(netApy(s.weighted_apy))}</td>
+      <td>${pct(s.weighted_apy ?? 0)}</td>
       <td>${pct(estApy(s))}</td>
       <td>${money(s.available)}</td>
       <td>${s.credits_count ?? 0} 筆</td>
@@ -632,7 +632,7 @@ function renderSymbolTable(statuses) {
   const sum = (f) => statuses.reduce((a, s) => a + (f(s) || 0), 0);
   const tLent = sum((s) => s.total_lent);
   const tWallet = sum(walletTotal);
-  const wApy = tLent ? netApy(sum((s) => (s.total_lent || 0) * (s.weighted_apy || 0))) / tLent : 0;
+  const wApy = tLent ? sum((s) => (s.total_lent || 0) * (s.weighted_apy || 0)) / tLent : 0;
   const eApy = tWallet ? netApy(sum((s) => (s.total_lent || 0) * (s.weighted_apy || 0))) / tWallet : 0;
   const total = `<tr class="total-row"><td>合計</td>
       <td>${money(tWallet)}</td><td>${money(tLent)}</td>
