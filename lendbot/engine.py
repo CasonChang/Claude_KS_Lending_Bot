@@ -198,7 +198,7 @@ class Engine:
         # 收益同步（每小時）+ 資金變動偵測（每小時）+ 每日總結 + 舊資料清理（每天）
         if self.has_auth and time.time() - self.last_earnings_sync > 3600:
             self._sync_earnings()
-        if self.has_auth and time.time() - self.last_capital_sync > 3600:
+        if self.has_auth and time.time() - self.last_capital_sync > 900:  # 每 15 分
             try:
                 self._sync_capital_flows()
             except Exception:
@@ -762,12 +762,30 @@ class Engine:
 
     # ════════ Telegram 指令 ════════
 
+    def _cmd_capital(self) -> str:
+        """立刻偵測資金變動（入金/出金/兌換）並回最近幾筆——入金後不必等每小時排程。"""
+        if not self.has_auth:
+            return "❌ 沒有 API key，無法查帳本"
+        try:
+            self._sync_capital_flows()
+        except Exception as e:
+            return f"⚠️ 偵測失敗：{e}"
+        rows = self.store.select("capital_flows", {"order": "ts.desc", "limit": "5"})
+        if not rows:
+            return "目前沒有資金變動紀錄"
+        lines = ["💰 最近資金變動："]
+        for r in rows:
+            dt = datetime.fromisoformat(r["ts"]).astimezone(TZ)
+            lines.append(f"{dt:%m/%d %H:%M} {r['kind']} {r['amount']:+,.0f} {r['currency']}")
+        return "\n".join(lines)
+
     def _register_commands(self):
         self.tg.commands.update({
             "/status": lambda _="": self._status_text(),
             "/rates": lambda _="": self._rates_text(),
             "/earnings": lambda _="": self._earnings_summary(),
             "/review": lambda _="": self._yesterday_review(),
+            "/capital": lambda _="": self._cmd_capital(),
             "/pause": lambda _="": self._cmd_pause(),
             "/resume": lambda _="": self._cmd_resume(),
             "/go": lambda _="": self._cmd_go(),
@@ -775,6 +793,7 @@ class Engine:
             "/help": lambda _="": (
                 "/status 狀態總覽\n/rates 市場利率\n/earnings 收益\n"
                 "/review 昨日策略檢討\n"
+                "/capital 立刻偵測入金/出金/兌換並更新\n"
                 "/go 立刻執行最新建議掛單（觀察模式也會真的下單）\n"
                 "/lend 手動掛單，格式：/lend fUSD 250 11.5 7\n"
                 "　　　（幣別 金額 年化% 天期）\n"
