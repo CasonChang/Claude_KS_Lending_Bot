@@ -525,6 +525,26 @@ class Engine:
                 out[currency] = s
         return out
 
+    def _yesterday_lent_avg(self, y_start: datetime, y_end: datetime) -> dict:
+        """昨日各幣別平均放貸本金（credits_snapshots 的 total_lent 取平均）。
+
+        用來把『實收利息』normalize 成單位資金的殖利率——不然兩幣本金不同，
+        絕對利息誰多誰少沒有比較意義。"""
+        to_z = lambda dt: dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        rows = self.store.select("credits_snapshots", {
+            "and": f"(ts.gte.{to_z(y_start)},ts.lt.{to_z(y_end)})",
+            "select": "symbol,total_lent", "limit": "5000",
+        })
+        agg: dict[str, list] = {}  # currency -> [sum, n]
+        for r in rows:
+            cur = (r.get("symbol") or "")[1:]
+            tl = r.get("total_lent")
+            if cur and tl:
+                a = agg.setdefault(cur, [0.0, 0])
+                a[0] += tl
+                a[1] += 1
+        return {cur: s / n for cur, (s, n) in agg.items() if n}
+
     def _yesterday_review(self) -> str:
         """昨日策略執行檢討：成交/撤單/結束統計 + 實收利息 + 幾句觀察。
 
@@ -572,8 +592,19 @@ class Engine:
             lines.append(f"{sym}：" + "｜".join(parts))
 
         realized = self._yesterday_earnings(y_start, y_end)
+        avg_lent = self._yesterday_lent_avg(y_start, y_end)
+        net_yield = {}  # currency -> 單位資金年化淨殖利率 %（利息已是扣費後入帳）
         if realized:
-            lines.append("實收利息：" + "｜".join(f"{c} {v:.4f}" for c, v in realized.items()))
+            parts = []
+            for cur, amt in realized.items():
+                cap = avg_lent.get(cur)
+                if cap and cap > 0:
+                    y = amt / cap * 365 * 100
+                    net_yield[cur] = y
+                    parts.append(f"{cur} {amt:.4f}（本金~${cap:,.0f}→年化 {y:.1f}%）")
+                else:
+                    parts.append(f"{cur} {amt:.4f}")
+            lines.append("實收利息：" + "｜".join(parts))
 
         # 觀察（簡單啟發式，給人判斷的線索而非結論）
         obs = []
@@ -589,9 +620,16 @@ class Engine:
         tc, tf = sum(cancels.values()), sum(f[0] for f in fills.values())
         if tc and tc > max(5, tf):
             obs.append(f"撤單 {tc} 次偏多，留意是否頻繁重掛洗掉排隊順位")
-        if realized.get("UST") and realized.get("USD") and realized["USD"] > 0:
-            ratio = realized["UST"] / realized["USD"]
-            obs.append(f"UST 實收是 USD 的 {ratio:.1f} 倍（驗證 UST 溢價）")
+        # 用單位資金年化殖利率比較（已扣本金差異），才是真正誰划算
+        if "USD" in net_yield and "UST" in net_yield:
+            hi, lo = ("USD", "UST") if net_yield["USD"] >= net_yield["UST"] else ("UST", "USD")
+            diff = net_yield[hi] - net_yield[lo]
+            if diff >= 0.5:
+                obs.append(f"單位資金實際年化 {hi} {net_yield[hi]:.1f}% > {lo} "
+                           f"{net_yield[lo]:.1f}%（差 {diff:.1f}pp，已排除本金多寡），目前 {hi} 較划算")
+            else:
+                obs.append(f"單位資金實際年化 USD {net_yield['USD']:.1f}%／UST "
+                           f"{net_yield['UST']:.1f}%，兩者相當（本金不同造成的絕對利息差非真實差異）")
         if obs:
             lines.append("📝 " + "；".join(obs))
         return "\n".join(lines)
