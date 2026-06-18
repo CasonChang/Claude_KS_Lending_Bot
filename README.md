@@ -62,10 +62,40 @@ Margin Funding(讀+寫)。**不要開提幣權限！**
 2. Settings → API：`service_role` key 填到 `.env`（伺服器用），
    `anon` key 填到 `web/config.js`（網頁用，公開沒關係）
 
-### 4. Zeabur 部署
-1. 整個 repo 推上 GitHub（private 建議）
-2. Zeabur → New Service → 連 GitHub repo，會自動偵測 Dockerfile
-3. 環境變數照 `.env.example` 填上（`DRY_RUN` 先 `true` 觀察，穩了改 `false`）
+### 4. Zeabur 部署（24/7 雲端長跑）
+
+機器人是純背景 worker（不對外開 port，Dashboard 在 GitHub Pages），
+Zeabur 偵測到 `Dockerfile` 就會用它建置。env 直接在 Zeabur 後台設定，
+**不需要也不要**把 `.env` 進 repo（程式找不到 `.env` 會自動改讀系統環境變數）。
+
+**部署步驟**
+1. repo 推上 GitHub（已是 `CasonChang/Claude_KS_Lending_Bot`）。
+2. Zeabur → New Project → Add Service → Deploy from GitHub → 選此 repo。
+   會自動偵測 `Dockerfile`，不用選 framework。
+3. Service → Variables，逐一填入（值同你本機 `.env`）：
+
+   | 變數 | 值 |
+   |---|---|
+   | `BFX_API_KEY` | Bitfinex key（只開 Account/Wallets 讀、Margin Funding 讀寫，**不開提幣**）|
+   | `BFX_API_SECRET` | Bitfinex secret |
+   | `TELEGRAM_BOT_TOKEN` | 同本機 |
+   | `TELEGRAM_CHAT_ID` | 同本機 |
+   | `SUPABASE_URL` | 同本機 |
+   | `SUPABASE_SERVICE_KEY` | `service_role` key（伺服器端，勿外流）|
+   | `DRY_RUN` | **先填 `true`**（觀察驗證），確認無誤再改 `false` |
+
+4. Deploy，看 Logs 出現 `啟動：觀察模式` + `Supabase：已連接｜Telegram：已連接`。
+
+> ⚠️ **絕對不要本機與 Zeabur 同時跑！** 單例鎖只擋同一台機器，擋不到跨機；
+> 兩個實例會同時下單、Telegram long-polling 互相搶（回 409）。務必照下方 SOP 乾淨切換。
+
+**本機 → Zeabur 乾淨切換 SOP**
+1. （無風險）Zeabur 先用 `DRY_RUN=true` 部好、設好所有 env，但**先別停本機**。
+2. **停掉本機機器人**（關掉那個背景 process）。此時只有 Zeabur 在跑、且是觀察模式
+   → 不會動你的單，交易所上既有掛單原封不動繼續生息。
+3. 看 Zeabur Logs／Telegram：啟動訊息有到、`/status` 有回應、Supabase 有更新 → 代表 env 全對。
+4. Zeabur Variables 把 `DRY_RUN` 改成 `false` → Redeploy。機器人開始真實接管。
+5. Telegram 收到「真實模式」啟動訊息後，**本機保持關閉**，切換完成。
 
 ### 5. GitHub Pages（網頁）
 1. `web/config.js` 填入 Supabase URL + anon key 後 commit

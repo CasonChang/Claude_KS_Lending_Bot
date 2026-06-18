@@ -1,0 +1,18 @@
+# 只有 lendbot/ + config.yaml + requirements.txt 進得了映像，其餘排除以加速建置
+.git/
+.github/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.log
+.env
+.env.example
+.venv/
+venv/
+web/
+research/
+tools/
+tests/
+supabase/
+.claude/
+*.md
