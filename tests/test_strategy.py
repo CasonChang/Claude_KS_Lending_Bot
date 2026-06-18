@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lendbot.bfx_client import BookEntry, Credit, FundingTicker, FundingTrade, Offer
-from lendbot.engine import classify_flow, format_fills
+from lendbot.engine import classify_flow, format_closes, format_fills
 from lendbot.strategy import (MarketView, analyze_market, apy_to_daily,
                               build_ladder, choose_period, daily_to_apy, iqm,
                               should_cancel)
@@ -269,3 +269,21 @@ def test_format_fills_multiple_merges_into_one():
     assert msg.count("・") == 3
     # 依金額由大到小排序
     assert msg.index("300.00") < msg.index("200.00") < msg.index("150.00")
+
+
+# ── 結束推播合併 ──
+def _close(amount, rate=0.0003, period=2, reason="借款人提前還款", held="39 分鐘", pct=1.0):
+    return {"amount": amount, "rate": rate, "period": period,
+            "reason": reason, "held_str": held, "held_pct": pct}
+
+def test_format_closes_single_keeps_detail():
+    msg = format_closes("fUST", [_close(500, reason="到期歸還", held="2.0 天", pct=100)])
+    assert "放貸結束（到期歸還）" in msg
+    assert "500.00 UST" in msg
+
+def test_format_closes_multiple_merges():
+    msg = format_closes("fUSD", [_close(100), _close(300), _close(200)])
+    assert "放貸結束 3 筆" in msg
+    assert "合計 600.00 USD" in msg
+    assert msg.count("・") == 3
+    assert msg.index("300.00") < msg.index("200.00") < msg.index("100.00")

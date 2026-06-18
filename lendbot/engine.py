@@ -70,6 +70,22 @@ def format_fills(sym: str, fills: list) -> str:
     return "\n".join(lines)
 
 
+def format_closes(sym: str, closes: list) -> str:
+    """把本輪所有結束放貸整理成一則（closes：_record_close 回傳的 dict 清單）。"""
+    ccy = sym[1:]
+    closes = sorted(closes, key=lambda c: c["amount"], reverse=True)
+    if len(closes) == 1:
+        c = closes[0]
+        return (f"💸 {sym} 放貸結束（{c['reason']}）\n"
+                f"金額：{c['amount']:,.2f} {ccy}｜年化 {fmt_apy(c['rate'])}\n"
+                f"持有 {c['held_str']}（放滿 {c['period']} 天的 {c['held_pct']:.0f}%）")
+    total = sum(c["amount"] for c in closes)
+    lines = [f"💸 {sym} 放貸結束 {len(closes)} 筆｜合計 {total:,.2f} {ccy}"]
+    lines += [f"・{c['amount']:,.2f} {ccy}｜年化 {fmt_apy(c['rate'])}｜持有 "
+              f"{c['held_str']}（{c['held_pct']:.0f}%）｜{c['reason']}" for c in closes]
+    return "\n".join(lines)
+
+
 @dataclass
 class SimAccount:
     """模擬帳戶（無 API key 時）：掛單若利率 <= 近期最高成交利率就視為成交。"""
@@ -237,9 +253,12 @@ class Engine:
             credits = self.client.active_credits(sym)
 
         # 4) 成交/結束偵測（第一輪只建基準不推播）+ 歷史回補（抓盲區內成交又秒還的單）
-        self._track_credits(sym, st, credits, now_mts)
+        #    本輪所有成交/結束彙整成「一則」推播，避免同時間連發多則洗版
+        blocks = self._track_credits(sym, st, credits, now_mts)
         if self.has_auth:
-            self._reconcile_closed_history(sym, st)
+            blocks += self._reconcile_closed_history(sym, st)
+        if blocks:
+            self.tg.notify("\n\n".join(blocks))
 
         # 5) 撤掉過時掛單 + 6) 階梯掛單
         if not self.paused:
@@ -261,18 +280,19 @@ class Engine:
         self._save_status(sym, view, available, credits, offers, ts)
 
     def _track_credits(self, sym: str, st: SymbolState, credits: list[Credit],
-                       now_mts: int):
-        """偵測新成交（出現）與放貸結束（消失）。
+                       now_mts: int) -> list[str]:
+        """偵測新成交（出現）與放貸結束（消失），回傳推播區塊（由呼叫端彙整成一則）。
         結束原因判斷：實際持有 >= 天期的 98% 視為到期，否則是借款人提前還款。"""
         current = {c.id: c for c in credits}
         if st.first_cycle:
             st.known_credits = current
             st.first_cycle = False
-            return
+            return []
         new_ids = current.keys() - st.known_credits.keys()
         closed_ids = st.known_credits.keys() - current.keys()
         st_known, st.known_credits = st.known_credits, current
 
+        blocks: list[str] = []
         new_fills = []
         for cid in new_ids:
             c = current[cid]
@@ -282,17 +302,22 @@ class Engine:
             }, now_iso())
             new_fills.append(c)
         if new_fills and self.cfg.telegram.get("notify_fills", True):
-            self.tg.notify(format_fills(sym, new_fills))
+            blocks.append(format_fills(sym, new_fills))
 
+        closes = []
         for cid in closed_ids:
             c = st_known[cid]
             st.processed_closed.add(cid)
-            self._record_close(sym, c.amount, c.rate, c.period, c.mts_opening,
-                               now_mts, cid)
+            closes.append(self._record_close(sym, c.amount, c.rate, c.period,
+                                             c.mts_opening, now_mts, cid))
+        if closes and self.cfg.telegram.get("notify_closes", True):
+            blocks.append(format_closes(sym, closes))
+        return blocks
 
     def _record_close(self, sym: str, amount: float, rate: float, period: int,
                       mts_opening: int, mts_close: int, cid: int,
-                      backfill: bool = False):
+                      backfill: bool = False) -> dict:
+        """記錄一筆結束放貸到 DB，回傳推播用顯示資料（推播由呼叫端彙整成一則）。"""
         held_days = max(0.0, (mts_close - mts_opening) / 86_400_000)
         matured = held_days >= period * 0.98
         action = "closed_matured" if matured else "closed_early"
@@ -306,38 +331,40 @@ class Engine:
             "opened": datetime.fromtimestamp(mts_opening / 1000,
                                              timezone.utc).isoformat(),
         }, now_iso())
-        if self.cfg.telegram.get("notify_closes", True):
-            # 直接用原始時間戳算，避免 held_days 四捨五入失真；不到 1 小時改用分鐘
-            held_minutes = (mts_close - mts_opening) / 60_000
-            if held_minutes < 60:
-                held_str = f"{held_minutes:.0f} 分鐘"
-            elif held_minutes < 1440:
-                held_str = f"{held_minutes / 60:.1f} 小時"
-            else:
-                held_str = f"{held_minutes / 1440:.1f} 天"
-            held_pct = held_days / period * 100 if period else 0
-            self.tg.notify(f"💸 {sym} 放貸結束（{reason}）\n"
-                           f"金額：{amount:,.2f} {sym[1:]}｜年化 {fmt_apy(rate)}\n"
-                           f"持有 {held_str}（放滿 {period} 天的 {held_pct:.0f}%）")
+        # 直接用原始時間戳算，避免 held_days 四捨五入失真；不到 1 小時改用分鐘
+        held_minutes = (mts_close - mts_opening) / 60_000
+        if held_minutes < 60:
+            held_str = f"{held_minutes:.0f} 分鐘"
+        elif held_minutes < 1440:
+            held_str = f"{held_minutes / 60:.1f} 小時"
+        else:
+            held_str = f"{held_minutes / 1440:.1f} 天"
+        return {"amount": amount, "rate": rate, "period": period, "reason": reason,
+                "held_str": held_str, "held_pct": held_days / period * 100 if period else 0}
 
-    def _reconcile_closed_history(self, sym: str, st: SymbolState):
-        """用已結束放貸的歷史回補輪詢盲區（成交後快速歸還、兩次輪詢間來去的單）。"""
+    def _reconcile_closed_history(self, sym: str, st: SymbolState) -> list[str]:
+        """用已結束放貸的歷史回補輪詢盲區（成交後快速歸還、兩次輪詢間來去的單）。
+        回傳推播區塊，由呼叫端與本輪成交/結束合併成一則。"""
         try:
             hist = self.client.credits_history(sym, limit=25)
         except BfxError as e:
             log.warning("%s 結束歷史查詢失敗: %s", sym, e)
-            return
+            return []
         if st.first_hist_sync:  # 啟動時把既有歷史標記為已處理，避免洗版
             st.processed_closed.update(h.id for h in hist)
             st.first_hist_sync = False
-            return
+            return []
+        closes = []
         for h in hist:
             if h.id in st.processed_closed:
                 continue
             st.processed_closed.add(h.id)
             log.info("%s 盲區回補：#%s %.2f @ %s", sym, h.id, h.amount, fmt_apy(h.rate))
-            self._record_close(sym, h.amount, h.rate, h.period,
-                               h.mts_opening, h.mts_close, h.id, backfill=True)
+            closes.append(self._record_close(sym, h.amount, h.rate, h.period,
+                                             h.mts_opening, h.mts_close, h.id, backfill=True))
+        if closes and self.cfg.telegram.get("notify_closes", True):
+            return [format_closes(sym, closes)]
+        return []
 
     def _cancel_stale(self, sym: str, st: SymbolState, offers: list[Offer],
                       view: MarketView, now_mts: int, ts: str) -> float:
