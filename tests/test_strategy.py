@@ -4,8 +4,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lendbot.bfx_client import BookEntry, FundingTicker, FundingTrade, Offer
-from lendbot.engine import classify_flow
+from lendbot.bfx_client import BookEntry, Credit, FundingTicker, FundingTrade, Offer
+from lendbot.engine import classify_flow, format_fills
 from lendbot.strategy import (MarketView, analyze_market, apy_to_daily,
                               build_ladder, choose_period, daily_to_apy, iqm,
                               should_cancel)
@@ -247,3 +247,25 @@ def test_classify_flow_skips_internal_transfer():
 
 def test_classify_flow_skips_dust():
     assert classify_flow("Deposit something tiny", 0.005) is None
+
+
+# ── 成交推播合併（多筆同時成交整理成一則）──
+def _credit(amount, rate=0.0003, period=2, cid=1):
+    return Credit(id=cid, symbol="fUSD", amount=amount, rate=rate,
+                  period=period, mts_opening=NOW)
+
+def test_format_fills_single_keeps_detail():
+    msg = format_fills("fUSD", [_credit(200)])
+    assert "放貸成交！" in msg
+    assert "200.00 USD" in msg
+    assert msg.count("\n") == 3  # 金額/利率/天期 各一行
+
+def test_format_fills_multiple_merges_into_one():
+    fills = [_credit(150, cid=1), _credit(300, cid=2), _credit(200, cid=3)]
+    msg = format_fills("fUSD", fills)
+    # 一則訊息含標題 + 3 筆明細
+    assert "成交 3 筆" in msg
+    assert "合計 650.00 USD" in msg
+    assert msg.count("・") == 3
+    # 依金額由大到小排序
+    assert msg.index("300.00") < msg.index("200.00") < msg.index("150.00")

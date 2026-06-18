@@ -54,6 +54,22 @@ def classify_flow(description: str, amount: float) -> str | None:
     return None
 
 
+def format_fills(sym: str, fills: list) -> str:
+    """把本輪所有新成交整理成一則推播（多筆合併，避免同時間洗版）。"""
+    ccy = sym[1:]
+    fills = sorted(fills, key=lambda c: c.amount, reverse=True)
+    if len(fills) == 1:
+        c = fills[0]
+        return (f"✅ {sym} 放貸成交！\n金額：{c.amount:,.2f} {ccy}\n"
+                f"利率：{c.rate:.6%}/天（年化 {fmt_apy(c.rate)}）\n"
+                f"天期：{c.period} 天")
+    total = sum(c.amount for c in fills)
+    lines = [f"✅ {sym} 放貸成交 {len(fills)} 筆｜合計 {total:,.2f} {ccy}"]
+    lines += [f"・{c.amount:,.2f} {ccy}｜年化 {fmt_apy(c.rate)}｜{c.period} 天"
+              for c in fills]
+    return "\n".join(lines)
+
+
 @dataclass
 class SimAccount:
     """模擬帳戶（無 API key 時）：掛單若利率 <= 近期最高成交利率就視為成交。"""
@@ -257,16 +273,16 @@ class Engine:
         closed_ids = st.known_credits.keys() - current.keys()
         st_known, st.known_credits = st.known_credits, current
 
+        new_fills = []
         for cid in new_ids:
             c = current[cid]
             self.store.log_action("fill", {
                 "symbol": sym, "id": c.id, "amount": c.amount, "rate": c.rate,
                 "period": c.period, "apy": round(daily_to_apy(c.rate) * 100, 2),
             }, now_iso())
-            if self.cfg.telegram.get("notify_fills", True):
-                self.tg.notify(f"✅ {sym} 放貸成交！\n金額：{c.amount:,.2f} {sym[1:]}\n"
-                               f"利率：{c.rate:.6%}/天（年化 {fmt_apy(c.rate)}）\n"
-                               f"天期：{c.period} 天")
+            new_fills.append(c)
+        if new_fills and self.cfg.telegram.get("notify_fills", True):
+            self.tg.notify(format_fills(sym, new_fills))
 
         for cid in closed_ids:
             c = st_known[cid]
