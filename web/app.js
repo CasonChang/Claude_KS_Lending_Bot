@@ -31,13 +31,17 @@ const pct = (apy) => apy.toFixed(2) + "%";
 // Bitfinex 對提供融資（放貸）賺到的利息抽 15% 手續費（官方 fee schedule）
 const FUNDING_FEE = 0.15;
 
+// 整個「我的放貸總覽」區的年化一律顯示「稅後」（扣掉 15% 放貸手續費）＝實際入袋
+const NET = 1 - FUNDING_FEE;
+const netApy = (grossApy) => (grossApy || 0) * NET;  // 稅後年化（已扣手續費）
+
 // 一筆 status 的「卡住的錢」：放貸中 + 掛單中（已被預留）+ 可用
 const offersTotal = (s) => (s.offers || []).reduce((a, o) => a + (o.amount || 0), 0);
 const walletTotal = (s) => (s.available || 0) + (s.total_lent || 0) + offersTotal(s);
-// 總預估年化：只有放貸中的錢在賺，分母放整個錢包 → 反映閒置/掛單未成交的拖累
+// 總預估年化（稅後）：只有放貸中的錢在賺，分母放整個錢包 → 反映閒置/掛單未成交的拖累
 const estApy = (s) => {
   const w = walletTotal(s);
-  return w ? (s.total_lent || 0) * (s.weighted_apy || 0) / w : 0;
+  return w ? netApy((s.total_lent || 0) * (s.weighted_apy || 0)) / w : 0;
 };
 
 // 剩餘時間：用開始時間 + 天期 推算到期點，前端即時換算成 天/時/分（比後端 X.X 天好懂）
@@ -482,7 +486,7 @@ function renderDashboard(d) {
   const totalLent = sum((s) => s.total_lent);
   const grandWallet = sum(walletTotal);
   const grandEstApy = grandWallet
-    ? statuses.reduce((a, s) => a + (s.total_lent || 0) * (s.weighted_apy || 0), 0) / grandWallet
+    ? netApy(statuses.reduce((a, s) => a + (s.total_lent || 0) * (s.weighted_apy || 0), 0)) / grandWallet
     : 0;
   $("dWallet").textContent = "$" + grandWallet.toLocaleString(undefined, { maximumFractionDigits: 2 });
   $("dLent").textContent = "$" + totalLent.toLocaleString();
@@ -509,23 +513,40 @@ function fmtDate(iso) {
     { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
+// 每日 / 放滿 預估收益都是「稅後」淨利息（已扣 15% 手續費）
+const dailyIncome = (c) => (c.amount || 0) * (c.rate || 0) * NET;
+const fullIncome = (c) => (c.amount || 0) * (c.rate || 0) * (c.period || 0) * NET;
+
 function renderCredits(statuses) {
   const rows = statuses.flatMap((s) =>
     (s.credits || []).map((c) => ({ symbol: s.symbol, ...c })));
   const tbody = $("creditsTable").querySelector("tbody");
-  tbody.innerHTML = rows.length
-    ? rows.map((c) => {
-        const remainPct = c.period ? Math.max(0, c.remaining_days / c.period) : 0;
-        const bar = `<span class="mini-bar"><span style="width:${(1 - remainPct) * 100}%"></span></span>`;
-        // 放滿預估報酬：放好放滿整個天期能拿到的淨利息（扣 15% 手續費）
-        const full = (c.amount || 0) * (c.rate || 0) * (c.period || 0) * (1 - FUNDING_FEE);
-        return `<tr><td>${c.symbol}</td><td>$${c.amount.toLocaleString()}</td>
-          <td>${pct(c.apy ?? dailyToApy(c.rate))}</td><td>${c.period} 天</td>
-          <td class="good">+$${full.toFixed(4)}</td>
-          <td>${c.opened ? fmtDate(c.opened) : "—"}</td>
-          <td>${fmtRemaining(c.opened, c.period)} ${bar}</td></tr>`;
-      }).join("")
-    : `<tr><td colspan="7" class="muted">目前沒有放貸中的部位</td></tr>`;
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="muted">目前沒有放貸中的部位</td></tr>`;
+    return;
+  }
+  const body = rows.map((c) => {
+    const remainPct = c.period ? Math.max(0, c.remaining_days / c.period) : 0;
+    const bar = `<span class="mini-bar"><span style="width:${(1 - remainPct) * 100}%"></span></span>`;
+    return `<tr><td>${c.symbol}</td><td>$${c.amount.toLocaleString()}</td>
+      <td>${pct(netApy(c.apy ?? dailyToApy(c.rate)))}</td><td>${c.period} 天</td>
+      <td class="good">+$${dailyIncome(c).toFixed(4)}</td>
+      <td class="good">+$${fullIncome(c).toFixed(4)}</td>
+      <td>${c.opened ? fmtDate(c.opened) : "—"}</td>
+      <td>${fmtRemaining(c.opened, c.period)} ${bar}</td></tr>`;
+  }).join("");
+
+  // 總結列：金額、每日稅後收益、放滿稅後收益 加總
+  const tAmt = rows.reduce((a, c) => a + (c.amount || 0), 0);
+  const tDaily = rows.reduce((a, c) => a + dailyIncome(c), 0);
+  const tFull = rows.reduce((a, c) => a + fullIncome(c), 0);
+  const total = `<tr class="total-row"><td>合計 ${rows.length} 筆</td>
+    <td>$${tAmt.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+    <td>—</td><td>—</td>
+    <td class="good">+$${tDaily.toFixed(4)}/日</td>
+    <td class="good">+$${tFull.toFixed(4)}</td>
+    <td>—</td><td>—</td></tr>`;
+  tbody.innerHTML = body + total;
 }
 
 function renderSuggested(statuses) {
@@ -601,7 +622,7 @@ function renderSymbolTable(statuses) {
   const rows = statuses.map((s) => `<tr><td>${s.symbol}</td>
       <td>${money(walletTotal(s))}</td>
       <td>${money(s.total_lent)}</td>
-      <td>${pct(s.weighted_apy ?? 0)}</td>
+      <td>${pct(netApy(s.weighted_apy))}</td>
       <td>${pct(estApy(s))}</td>
       <td>${money(s.available)}</td>
       <td>${s.credits_count ?? 0} 筆</td>
@@ -611,8 +632,8 @@ function renderSymbolTable(statuses) {
   const sum = (f) => statuses.reduce((a, s) => a + (f(s) || 0), 0);
   const tLent = sum((s) => s.total_lent);
   const tWallet = sum(walletTotal);
-  const wApy = tLent ? sum((s) => (s.total_lent || 0) * (s.weighted_apy || 0)) / tLent : 0;
-  const eApy = tWallet ? sum((s) => (s.total_lent || 0) * (s.weighted_apy || 0)) / tWallet : 0;
+  const wApy = tLent ? netApy(sum((s) => (s.total_lent || 0) * (s.weighted_apy || 0))) / tLent : 0;
+  const eApy = tWallet ? netApy(sum((s) => (s.total_lent || 0) * (s.weighted_apy || 0))) / tWallet : 0;
   const total = `<tr class="total-row"><td>合計</td>
       <td>${money(tWallet)}</td><td>${money(tLent)}</td>
       <td>${pct(wApy)}</td><td>${pct(eApy)}</td>
