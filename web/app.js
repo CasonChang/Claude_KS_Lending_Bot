@@ -657,7 +657,17 @@ function drawEarningsChart(earnings) {
     type: "bar",
     data: { labels: dates.map((d) => d.slice(5)), datasets },
     options: {
-      plugins: { legend: { display: currencies.length > 1 } },
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: currencies.length > 1 },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => `${ctx.dataset.label}：${(ctx.parsed.y || 0).toFixed(4)}`,
+            footer: (items) => "總計：" +
+              items.reduce((a, it) => a + (it.parsed.y || 0), 0).toFixed(4),
+          },
+        },
+      },
       scales: { x: { stacked: true }, y: { stacked: true } },
     },
   });
