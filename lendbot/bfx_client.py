@@ -180,6 +180,20 @@ class BfxClient:
                 return float(w[4] if w[4] is not None else w[2])
         return 0.0
 
+    def funding_wallet(self, currency: str) -> tuple[float, float]:
+        """funding 錢包 (總餘額, 可用)。
+
+        總餘額 = w[2] BALANCE：含放貸中本金 + 掛單預留 + 未結算利息，是「錢包總額」的權威值
+        （單一原子讀取，不會像「可用+放貸+掛單」三塊分時相加那樣在撤單/掛單當下跳動）。
+        可用 = w[4] AVAILABLE_BALANCE：還能拿去掛新單的部分。"""
+        wallets = self._post_auth("auth/r/wallets")
+        for w in wallets:
+            if w[0] == "funding" and w[1] == currency:
+                bal = float(w[2] or 0)
+                avail = float(w[4] if w[4] is not None else w[2])
+                return bal, avail
+        return 0.0, 0.0
+
     def active_offers(self, symbol: str) -> list[Offer]:
         d = self._post_auth(f"auth/r/funding/offers/{symbol}")
         return [Offer(id=int(o[0]), symbol=o[1], mts_created=int(o[2]),

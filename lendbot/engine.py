@@ -245,10 +245,11 @@ class Engine:
                                f"{fmt_apy(view.recent_high)}（平常 {fmt_apy(view.trade_iqm)}）")
 
         # 3) 帳戶狀態
+        wallet_balance = None  # funding 錢包權威總額（real/observe 模式才有；模擬模式用 None → 網頁退回三塊相加）
         if st.sim is not None:
             available, offers, credits = st.sim.balance, list(st.sim.offers), list(st.sim.credits)
         else:
-            available = self.client.funding_available(currency)
+            wallet_balance, available = self.client.funding_wallet(currency)
             offers = self.client.active_offers(sym)
             credits = self.client.active_credits(sym)
 
@@ -277,7 +278,16 @@ class Engine:
             self._maybe_suggest(sym, st)
 
         # 8) 部位快照 + 機器人狀態
-        self._save_status(sym, view, available, credits, offers, ts)
+        # 撤單/掛單後重讀一致的帳戶快照：available 與 offers 要在同一時間點才自洽，
+        # 否則三塊分時相加（撤掉的單還在 offers、錢卻已回到 available）會雙重計算→總額跳動。
+        # 總額一律用 funding 錢包權威餘額（wallet_balance），不受此時序問題影響。
+        if st.sim is None and self.has_auth and not self.paused:
+            try:
+                wallet_balance, available = self.client.funding_wallet(currency)
+                offers = self.client.active_offers(sym)
+            except BfxError as e:
+                log.warning("%s 重讀帳戶快照失敗（用本輪稍早數值）: %s", sym, e)
+        self._save_status(sym, view, available, credits, offers, ts, wallet_balance)
 
     def _track_credits(self, sym: str, st: SymbolState, credits: list[Credit],
                        now_mts: int) -> list[str]:
@@ -438,7 +448,8 @@ class Engine:
         self.tg.notify("\n".join(lines))
 
     def _save_status(self, sym: str, view: MarketView, available: float,
-                     credits: list[Credit], offers: list[Offer], ts: str):
+                     credits: list[Credit], offers: list[Offer], ts: str,
+                     wallet_balance: float | None = None):
         total = sum(c.amount for c in credits)
         wrate = (sum(c.amount * c.rate for c in credits) / total) if total else 0.0
         if credits:
@@ -449,6 +460,7 @@ class Engine:
         self.store.update_bot_status(sym, {
             "ts": ts, "mode": self.mode_name, "paused": self.paused,
             "available": round(available, 2), "total_lent": round(total, 2),
+            "wallet_balance": round(wallet_balance, 2) if wallet_balance is not None else None,
             "weighted_apy": round(daily_to_apy(wrate) * 100, 2) if wrate else 0,
             "credits_count": len(credits), "offers_count": len(offers),
             "offers": [{"amount": o.amount, "rate": o.rate, "period": o.period}

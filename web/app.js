@@ -37,7 +37,12 @@ const netApy = (grossApy) => (grossApy || 0) * NET;  // 稅後年化（已扣手
 
 // 一筆 status 的「卡住的錢」：放貸中 + 掛單中（已被預留）+ 可用
 const offersTotal = (s) => (s.offers || []).reduce((a, o) => a + (o.amount || 0), 0);
-const walletTotal = (s) => (s.available || 0) + (s.total_lent || 0) + offersTotal(s);
+// 錢包總額：優先用機器人存的 Bitfinex funding 錢包真實餘額（含放貸本金+掛單預留+未結算利息，
+// 單一原子讀取、永遠自洽）；舊快照或模擬模式沒有時，退回用 可用+放貸+掛單 三塊相加（撤單/掛單當下可能短暫跳動）
+const walletTotal = (s) =>
+  typeof s.wallet_balance === "number"
+    ? s.wallet_balance
+    : (s.available || 0) + (s.total_lent || 0) + offersTotal(s);
 // 總預估年化（稅後）：只有放貸中的錢在賺，分母放整個錢包 → 反映閒置/掛單未成交的拖累
 const estApy = (s) => {
   const w = walletTotal(s);
