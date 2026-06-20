@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>每週放貸檢討</title>
+<link rel="stylesheet" href="style.css?v=20260620a">
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<style>
+  .rv-layout { display: flex; gap: 16px; flex-wrap: wrap; }
+  .rv-list { flex: 0 0 220px; display: flex; flex-direction: column; gap: 6px; }
+  .rv-list button { text-align: left; padding: 10px 12px; border-radius: 8px; line-height: 1.4; }
+  .rv-list button .small { display: block; }
+  .rv-list button.active { border-color: var(--accent, #4fc3f7); color: var(--text, #e6edf3); }
+  .rv-body { flex: 1 1 420px; min-width: 0; }
+  .rv-body h1 { font-size: 1.3rem; }
+  .rv-body h2 { font-size: 1.05rem; margin-top: 1.2em; }
+  .rv-body table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+  .rv-body th, .rv-body td { border: 1px solid var(--border, #2c3644); padding: 6px 8px; font-size: .9rem; }
+  .rv-body blockquote { border-left: 3px solid #4fc3f7; margin: 8px 0; padding: 4px 12px; color: #8b98a9; }
+  .rv-body code { background: #1c2430; padding: 1px 5px; border-radius: 4px; }
+  @media (max-width: 640px) { .rv-list { flex-basis: 100%; flex-direction: row; overflow-x: auto; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>📝 每週放貸檢討</h1>
+  <a href="index.html" class="ghost" style="text-decoration:none">← 回 Dashboard</a>
+</header>
+
+<section>
+  <div id="lockPanel" class="lock-panel">
+    <p class="muted">輸入 Dashboard 密碼以檢視每週檢討</p>
+    <div class="lock-row">
+      <input type="password" id="tokenInput" placeholder="Dashboard 密碼">
+      <button id="unlockBtn">解鎖</button>
+    </div>
+    <p id="lockError" class="error hidden">密碼錯誤或尚未設定 Supabase</p>
+  </div>
+
+  <div id="panel" class="hidden">
+    <div class="rv-layout">
+      <div class="rv-list" id="rvList"></div>
+      <div class="rv-body chart-box" id="rvBody"></div>
+    </div>
+  </div>
+</section>
+
+<footer class="muted small">每週末由策略 agent 產出。個人績效僅本人密碼可見，未公開。</footer>
+
+<script src="config.js"></script>
+<script>
+"use strict";
+const CFG = window.APP_CONFIG || {};
+const $ = (id) => document.getElementById(id);
+const TOKEN_KEY = "dash_token";   // 與主 Dashboard 共用同一組密碼
+let reviews = [];
+
+async function rpc(token) {
+  if (!CFG.SUPABASE_URL || !CFG.SUPABASE_ANON_KEY) return { error: "未設定 Supabase" };
+  try {
+    const r = await fetch(`${CFG.SUPABASE_URL}/rest/v1/rpc/dashboard_data`, {
+      method: "POST",
+      headers: {
+        apikey: CFG.SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${CFG.SUPABASE_ANON_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ p_token: token }),
+    });
+    if (!r.ok) return { error: `Supabase 回應 ${r.status}` };
+    const data = await r.json();
+    if (data === null) return { error: "密碼錯誤" };
+    return { data };
+  } catch (e) {
+    return { error: "Supabase 連線失敗" };
+  }
+}
+
+function renderList() {
+  const list = $("rvList");
+  list.innerHTML = "";
+  if (!reviews.length) {
+    $("rvBody").innerHTML = "<p class='muted'>尚無檢討紀錄。週末跟 agent 說「分析本週放貸狀況」即可產生。</p>";
+    return;
+  }
+  reviews.forEach((rv, i) => {
+    const b = document.createElement("button");
+    b.className = "ghost";
+    b.innerHTML = `${rv.period || rv.week}<span class="muted small">${rv.title || ""}</span>`;
+    b.onclick = () => { select(i); };
+    list.appendChild(b);
+  });
+  select(0);
+}
+
+function select(i) {
+  [...$("rvList").children].forEach((c, j) => c.classList.toggle("active", j === i));
+  const rv = reviews[i];
+  $("rvBody").innerHTML = marked.parse(rv.body_md || "");
+}
+
+async function tryUnlock(token, silent = false) {
+  const { data, error } = await rpc(token);
+  if (error) {
+    if (!silent) { $("lockError").textContent = error; $("lockError").classList.remove("hidden"); }
+    localStorage.removeItem(TOKEN_KEY);
+    return;
+  }
+  localStorage.setItem(TOKEN_KEY, token);
+  reviews = (data && data.weekly_reviews) || [];
+  $("lockPanel").classList.add("hidden");
+  $("panel").classList.remove("hidden");
+  renderList();
+}
+
+$("unlockBtn").addEventListener("click", () => tryUnlock($("tokenInput").value.trim()));
+$("tokenInput").addEventListener("keydown", (e) => { if (e.key === "Enter") tryUnlock($("tokenInput").value.trim()); });
+
+const saved = localStorage.getItem(TOKEN_KEY);
+if (saved) tryUnlock(saved, true);
+</script>
+</body>
+</html>

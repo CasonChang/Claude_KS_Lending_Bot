@@ -224,6 +224,51 @@ def test_should_not_cancel_competitive_offer():
     assert not should_cancel(offer, view_with(0.0003), SCFG, NOW)
 
 
+# ── 重掛：平靜期上層檔閒置下修（idle_redeploy_minutes）──
+
+IDLE_CFG = {**SCFG, "idle_redeploy_minutes": 30}
+
+
+def test_idle_redeploy_off_by_default():
+    # 預設 SCFG 沒設 idle_redeploy_minutes → 頂檔閒置再久也不撤（維持原行為）
+    offer = Offer(id=1, symbol="fUSD", mts_created=NOW - 120 * 60_000,
+                  amount=200, rate=0.0003 * 1.45, period=2)
+    assert not should_cancel(offer, view_with(0.0003), SCFG, NOW)
+
+
+def test_idle_redeploy_cancels_stale_upper_rung():
+    # 開啟後：平靜期、上層檔（×1.45）閒置超過 30 分 → 釋出重掛
+    offer = Offer(id=1, symbol="fUSD", mts_created=NOW - 40 * 60_000,
+                  amount=200, rate=0.0003 * 1.45, period=2)
+    assert should_cancel(offer, view_with(0.0003), IDLE_CFG, NOW)
+    # 中檔（×1.15）同樣會被釋出
+    mid = Offer(id=2, symbol="fUSD", mts_created=NOW - 40 * 60_000,
+                amount=300, rate=0.0003 * 1.15, period=2)
+    assert should_cancel(mid, view_with(0.0003), IDLE_CFG, NOW)
+
+
+def test_idle_redeploy_keeps_base_rung():
+    # 底檔掛在錨點附近（≤ 錨點 ×1.05）→ 不在「明顯高於錨點」之列，不下修
+    base = Offer(id=1, symbol="fUSD", mts_created=NOW - 120 * 60_000,
+                 amount=500, rate=0.0003, period=2)
+    assert not should_cancel(base, view_with(0.0003), IDLE_CFG, NOW)
+
+
+def test_idle_redeploy_not_during_spike():
+    # spike 期間要留著追高，閒置上層檔不下修
+    offer = Offer(id=1, symbol="fUSD", mts_created=NOW - 40 * 60_000,
+                  amount=200, rate=0.0003 * 1.45, period=2)
+    assert not should_cancel(offer, view_with(0.0003, spike=True, recent_high=0.001),
+                             IDLE_CFG, NOW)
+
+
+def test_idle_redeploy_waits_full_window():
+    # 過了 stale(10) 但還沒到 idle(30) 分，且未達崩跌門檻 → 先不動
+    offer = Offer(id=1, symbol="fUSD", mts_created=NOW - 15 * 60_000,
+                  amount=200, rate=0.0003 * 1.45, period=2)
+    assert not should_cancel(offer, view_with(0.0003), IDLE_CFG, NOW)
+
+
 # ── 資金變動分類器（用真實 Bitfinex ledger 描述）──
 def test_classify_flow_deposit():
     assert classify_flow("Deposit (TETHERUSDTAVAX) #24330381 on wallet exchange", 3000.0) == "入金"

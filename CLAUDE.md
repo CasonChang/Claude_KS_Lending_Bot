@@ -46,6 +46,15 @@ Bitfinex P2P 放貸自動化機器人。使用者說**繁體中文**，回覆請
 - **秘密**：`.env` 永不進 git（已在 `.gitignore`）；Supabase `service_role` key 只在伺服器端
   （Zeabur env / 本機 .env），網頁只用 `anon` key。正式 secrets 現在在 Zeabur 環境變數。
 
+## 每週放貸檢討（weekly review）
+
+使用者每個週末會說「**分析本週放貸狀況**」。流程與格式見 [`reviews/README.md`](reviews/README.md)：
+用 `SUPABASE_SERVICE_KEY` 讀 DB（actions_log/earnings/credits_snapshots/market_snapshots/capital_flows）
+＋ Bitfinex 公開 K 棒做市場基準 → 綜合評比 → 寫 `reviews/YYYY-MM-DD.md`（檔名=該週起始日，使用者一週是**週六～週五**）
+→ `python tools/post_weekly_review.py reviews/YYYY-MM-DD.md` upsert 到 Supabase → push。
+網頁從 Dashboard 右上「📝 每週檢討」連結（`web/reviews.html`）用同組密碼解鎖檢視。
+一次性安裝：`supabase/migrations/007_weekly_reviews.sql`（建表＋擴充 RPC）需先在 Supabase SQL Editor 跑一次。
+
 ## Telegram 指令
 
 `/status` `/rates` `/earnings` `/review`（昨日策略檢討）`/capital`（立即偵測入金/出金/兌換）

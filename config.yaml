@@ -50,6 +50,11 @@ strategy:
   stale_minutes: 10
   cancel_threshold: 0.05     # 5%
 
+  # 平靜期（無 spike）上層檔位掛超過這麼久還沒成交 → 釋出重掛，避免高利檔乾等閒置。
+  # 撤掉後下一輪 build_ladder 會把資金重新分配，大部分落到容易成交的最低檔（自然下修）；
+  # spike 期間完全不套用（要留著追高）。設 0 = 關閉。設比 stale_minutes 久很多才不會過度 churn。
+  idle_redeploy_minutes: 30
+
   min_offer_usd: 150         # Bitfinex 最小掛單額，勿改低
 
 dry_run:
