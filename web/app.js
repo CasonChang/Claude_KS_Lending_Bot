@@ -522,15 +522,73 @@ function fmtDate(iso) {
 const dailyIncome = (c) => (c.amount || 0) * (c.rate || 0) * NET;
 const fullIncome = (c) => (c.amount || 0) * (c.rate || 0) * (c.period || 0) * NET;
 
+// 放貸中明細：每欄可點箭頭做升/降冪排序
+let creditsRows = [];
+let creditsSort = { idx: 6, dir: -1 };  // 預設：開始時間 新→舊
+let creditsHeadersWired = false;
+// 各欄的排序取值（對應 thead 八欄）
+const CREDIT_SORT_KEYS = [
+  (c) => c.symbol || "",                                 // 0 幣別
+  (c) => c.amount || 0,                                  // 1 金額
+  (c) => c.apy ?? dailyToApy(c.rate),                    // 2 年化
+  (c) => c.period || 0,                                  // 3 天期
+  (c) => dailyIncome(c),                                 // 4 每日預估收益
+  (c) => fullIncome(c),                                  // 5 放滿預估報酬
+  (c) => (c.opened ? new Date(c.opened).getTime() : 0),  // 6 開始時間
+  (c) => (c.period ? (c.remaining_days ?? 0) : 0),       // 7 剩餘
+];
+
 function renderCredits(statuses) {
-  const rows = statuses.flatMap((s) =>
+  creditsRows = statuses.flatMap((s) =>
     (s.credits || []).map((c) => ({ symbol: s.symbol, ...c })));
+  setupCreditsSortHeaders();
+  renderCreditsBody();
+}
+
+function setupCreditsSortHeaders() {
+  const ths = $("creditsTable").querySelectorAll("thead th");
+  if (!creditsHeadersWired) {
+    ths.forEach((th, idx) => {
+      th.classList.add("sortable");
+      const arrow = document.createElement("span");
+      arrow.className = "sort-arrow";
+      th.appendChild(arrow);
+      th.addEventListener("click", () => {
+        if (creditsSort.idx === idx) creditsSort.dir *= -1;
+        else creditsSort = { idx, dir: idx === 0 ? 1 : -1 };  // 數字欄預設大→小、幣別小→大
+        renderCreditsBody();
+        updateCreditsArrows();
+      });
+    });
+    creditsHeadersWired = true;
+  }
+  updateCreditsArrows();
+}
+
+function updateCreditsArrows() {
+  $("creditsTable").querySelectorAll("thead th").forEach((th, idx) => {
+    const a = th.querySelector(".sort-arrow");
+    if (!a) return;
+    const active = creditsSort.idx === idx;
+    a.textContent = active ? (creditsSort.dir > 0 ? "▲" : "▼") : "⇅";
+    a.classList.toggle("active", active);
+  });
+}
+
+function renderCreditsBody() {
   const tbody = $("creditsTable").querySelector("tbody");
-  if (!rows.length) {
+  if (!creditsRows.length) {
     tbody.innerHTML = `<tr><td colspan="8" class="muted">目前沒有放貸中的部位</td></tr>`;
     return;
   }
-  const body = rows.map((c) => {
+  const acc = CREDIT_SORT_KEYS[creditsSort.idx];
+  creditsRows.sort((a, b) => {
+    const va = acc(a), vb = acc(b);
+    if (typeof va === "string") return creditsSort.dir * va.localeCompare(vb);
+    return creditsSort.dir * (va - vb);
+  });
+
+  const body = creditsRows.map((c) => {
     const remainPct = c.period ? Math.max(0, c.remaining_days / c.period) : 0;
     const bar = `<span class="mini-bar"><span style="width:${(1 - remainPct) * 100}%"></span></span>`;
     return `<tr><td>${c.symbol}</td><td>$${c.amount.toLocaleString()}</td>
@@ -542,10 +600,10 @@ function renderCredits(statuses) {
   }).join("");
 
   // 總結列：金額、每日稅後收益、放滿稅後收益 加總
-  const tAmt = rows.reduce((a, c) => a + (c.amount || 0), 0);
-  const tDaily = rows.reduce((a, c) => a + dailyIncome(c), 0);
-  const tFull = rows.reduce((a, c) => a + fullIncome(c), 0);
-  const total = `<tr class="total-row"><td>合計 ${rows.length} 筆</td>
+  const tAmt = creditsRows.reduce((a, c) => a + (c.amount || 0), 0);
+  const tDaily = creditsRows.reduce((a, c) => a + dailyIncome(c), 0);
+  const tFull = creditsRows.reduce((a, c) => a + fullIncome(c), 0);
+  const total = `<tr class="total-row"><td>合計 ${creditsRows.length} 筆</td>
     <td>$${tAmt.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
     <td>—</td><td>—</td>
     <td class="good">+$${tDaily.toFixed(4)}/日</td>

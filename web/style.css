@@ -99,6 +99,12 @@ table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
 th { color: var(--muted); font-weight: 600; }
 
+/* 可排序表頭 */
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable:hover { color: var(--text); }
+.sort-arrow { margin-left: 4px; font-size: 0.7rem; opacity: 0.45; }
+.sort-arrow.active { opacity: 1; color: var(--text); }
+
 .muted { color: var(--muted); }
 .small { font-size: 0.78rem; font-weight: 400; }
 
