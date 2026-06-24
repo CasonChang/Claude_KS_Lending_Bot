@@ -30,3 +30,12 @@
 
 - `supabase/migrations/007_weekly_reviews.sql` 要先在 Supabase SQL Editor 跑一次
   （建 `weekly_reviews` 表 + 擴充 `dashboard_data` RPC）。之後 agent 用 service key 寫入即可，不需再手動。
+
+## 未決議事項（每週檢討時務必檢查、做完決議就移除）
+
+- **天期邏輯改法（2026-06-24 提出，待本週檢討後定奪）**：
+  診斷見 `research/period_edge_findings.md`。核心：我們的 `periods` 把長天期發給高溢價檔（會被 refinance、白鎖），
+  把 2 天短期發給近市場價的基檔（最黏卻一直落地閒置）——邏輯接反。
+  建議改法：下修 `config.yaml` 的 `periods` 門檻，讓**近市場價的基/中檔**去鎖 30/120 天（黏住複利），
+  頂檔保持短期靈活去接回流。**使用者要求等本週（06/20–06/26）檢討完、看數據再決定保守/激進程度**。
+  檢討時請把這項拿出來，根據「31–120 天成交占比 / 長單放滿% / fUSD 實收淨年化」三指標給建議數值。
