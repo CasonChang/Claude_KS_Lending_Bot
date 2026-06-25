@@ -738,9 +738,20 @@ function drawEarningsChart(earnings) {
 
 let dailyApyChart;
 
+let apyEarnings = [];      // 後端給的每日收益（amount 為稅後實際入帳）
+let apyFeeMode = "net";    // net=稅後實拿（預設）；gross=稅前（÷0.85 還原，對照市場掛單利率）
+
 function drawDailyApyChart(earnings) {
+  apyEarnings = earnings || [];
+  renderDailyApyChart();
+}
+
+function renderDailyApyChart() {
   // 每日實際年化 = 當日利息 ÷（當日入帳後錢包餘額 - 當日利息）× 365
   // 餘額含放貸中的錢，是不錯的資金規模近似；出入金當天分母會跳動 → 該日數據失真
+  // amount 來自 ledger（已扣 15% 手續費的實際入帳）；稅前模式 ÷0.85 還原成市場掛單利率口徑
+  const earnings = apyEarnings;
+  const feeFactor = apyFeeMode === "gross" ? 1 / NET : 1;
   const dates = [...new Set(earnings.map((e) => e.date))].sort();
   const currencies = [...new Set(earnings.map((e) => e.currency))];
   const datasets = currencies.map((cur) => ({
@@ -748,7 +759,7 @@ function drawDailyApyChart(earnings) {
     data: dates.map((d) => {
       const e = earnings.find((x) => x.date === d && x.currency === cur);
       if (!e || !e.balance || e.balance <= e.amount) return null;
-      return +(e.amount / (e.balance - e.amount) * 365 * 100).toFixed(2);
+      return +(e.amount / (e.balance - e.amount) * 365 * 100 * feeFactor).toFixed(2);
     }),
     borderColor: SYMBOL_COLORS[cur] || chartColors.line,
     pointRadius: 2, borderWidth: 1.5, tension: 0.2, spanGaps: true,
@@ -903,6 +914,15 @@ document.querySelectorAll("#anchorRange .tf").forEach((btn) =>
     btn.classList.add("active");
     anchorRangeDays = Number(btn.dataset.days);
     renderAnchorChart();
+  }));
+
+// 每日實際年化的稅前/稅後切換（單選，純前端 ÷0.85 換算）
+document.querySelectorAll("#apyFeeToggle .tf").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#apyFeeToggle .tf").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    apyFeeMode = btn.dataset.fee;
+    renderDailyApyChart();
   }));
 
 buildMarketDOM();

@@ -60,7 +60,16 @@
     </div>
     <div class="charts">
       <div class="chart-box"><h3>每日收益（30 日，實際入帳）</h3><canvas id="earningsChart"></canvas></div>
-      <div class="chart-box"><h3>每日實際年化 <span class="muted small">利息÷當日資金規模，出入金當天會失真</span></h3><canvas id="dailyApyChart"></canvas></div>
+      <div class="chart-box">
+        <div class="chart-head">
+          <h3>每日實際年化 <span class="muted small">利息÷當日資金規模，出入金當天會失真</span></h3>
+          <div class="tf-btns" id="apyFeeToggle">
+            <button class="tf active" data-fee="net" title="已扣 15% 手續費，實際入袋">稅後（實拿）</button>
+            <button class="tf" data-fee="gross" title="還原成市場掛單利率，方便跟別人/市場 K 線比較">稅前（對照市場）</button>
+          </div>
+        </div>
+        <canvas id="dailyApyChart"></canvas>
+      </div>
       <div class="chart-box">
         <div class="chart-head">
           <h3>機器人錨點年化</h3>
@@ -114,6 +123,6 @@
 <footer class="muted small">資料僅供參考，放貸有風險。市場數據：Bitfinex 公開 API｜個人數據：Supabase</footer>
 
 <script src="config.js"></script>
-<script src="app.js?v=20260624a"></script>
+<script src="app.js?v=20260624b"></script>
 </body>
 </html>
