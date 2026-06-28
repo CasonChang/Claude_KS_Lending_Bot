@@ -40,10 +40,10 @@ strategy:
     - { weight: 0.40, mult: 1.50 }
 
   # 天期選擇：該檔年化(%) >= apy 就用對應天期（由大到小判斷）
+  # 邏輯：15%+ 極佳利率鎖 120 天、10–14% 普通好利率鎖 30 天、10% 以下保持 2 天靈活等更好行情
   periods:
-    - { apy: 18, days: 120 }
-    - { apy: 12, days: 30 }
-    - { apy: 8,  days: 7 }
+    - { apy: 15, days: 120 }
+    - { apy: 10, days: 30 }
     - { apy: 0,  days: 2 }
 
   # 重掛：掛超過 stale_minutes 未成交、且利率比錨點高 cancel_threshold 以上 → 撤單
