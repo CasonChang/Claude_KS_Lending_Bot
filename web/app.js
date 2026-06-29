@@ -503,6 +503,7 @@ function renderDashboard(d) {
 
   renderSymbolTable(statuses);
   renderCredits(statuses);
+  drawWalletTrendChart(earnings);
   drawEarningsChart(earnings);
   drawDailyApyChart(earnings);
   drawAnchorChart(d.snapshots || []);
@@ -775,6 +776,69 @@ function renderDailyApyChart() {
   });
 }
 
+// ── 錢包總額折線圖 ────────────────────────────────────────────
+let walletTrendEarnings = [];
+let walletTrendDays = 30;   // 預設顯示近 30 天
+let walletTrendChart;
+
+function drawWalletTrendChart(earnings) {
+  walletTrendEarnings = earnings || [];
+  renderWalletTrendChart();
+}
+
+function renderWalletTrendChart() {
+  // earnings 每筆 = {date, currency, amount, balance}
+  // 每日錢包總額 = 各幣別 balance 加總（balance 是當日利息入帳後的幣別餘額快照）
+  const cutoffDate = walletTrendDays
+    ? new Date(Date.now() - walletTrendDays * 86400000).toISOString().slice(0, 10)
+    : "0000-00-00";
+  const currencies = [...new Set(walletTrendEarnings.map((e) => e.currency))];
+
+  // 每個日期 × 幣別的 balance map
+  const balMap = {};
+  for (const e of walletTrendEarnings) {
+    if (e.date < cutoffDate) continue;
+    if (!balMap[e.date]) balMap[e.date] = {};
+    balMap[e.date][e.currency] = e.balance || 0;
+  }
+  const dates = Object.keys(balMap).sort();
+
+  // 堆疊各幣別 → dataset per currency
+  const datasets = currencies.map((cur) => ({
+    label: cur,
+    data: dates.map((d) => (balMap[d]?.[cur] ?? null)),
+    backgroundColor: (SYMBOL_COLORS[`f${cur}`] || chartColors.good) + "55",
+    borderColor: SYMBOL_COLORS[`f${cur}`] || chartColors.good,
+    fill: true, pointRadius: 1.5, borderWidth: 1.5, tension: 0.15, spanGaps: true,
+  }));
+
+  walletTrendChart?.destroy();
+  walletTrendChart = new Chart($("walletTrendChart"), {
+    type: "line",
+    data: { labels: dates.map((d) => d.slice(5)), datasets },
+    options: {
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: currencies.length > 1 },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => `${ctx.dataset.label}：$${(ctx.parsed.y || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
+            footer: (items) => "總計：$" + items.reduce((a, it) => a + (it.parsed.y || 0), 0)
+              .toLocaleString(undefined, { maximumFractionDigits: 2 }),
+          },
+        },
+      },
+      scales: {
+        x: { stacked: true },
+        y: {
+          stacked: true,
+          ticks: { callback: (v) => "$" + v.toLocaleString(undefined, { maximumFractionDigits: 0 }) },
+        },
+      },
+    },
+  });
+}
+
 let anchorSnaps = [];      // 後端給的近 7 天降採樣資料
 let anchorRangeDays = 3;   // 預設顯示近 3 天
 
@@ -923,6 +987,15 @@ document.querySelectorAll("#apyFeeToggle .tf").forEach((btn) =>
     btn.classList.add("active");
     apyFeeMode = btn.dataset.fee;
     renderDailyApyChart();
+  }));
+
+// 錢包總額折線的時間範圍切換（0 = 全部）
+document.querySelectorAll("#walletTrendRange .tf").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#walletTrendRange .tf").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    walletTrendDays = Number(btn.dataset.days);
+    renderWalletTrendChart();
   }));
 
 buildMarketDOM();

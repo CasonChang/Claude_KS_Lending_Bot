@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Bitfinex 放貸 Dashboard</title>
-<link rel="stylesheet" href="style.css?v=20260624a">
+<link rel="stylesheet" href="style.css?v=20260629a">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -57,6 +57,18 @@
     <div class="chart-box">
       <h3>放貸中明細（每筆）</h3>
       <table id="creditsTable"><thead><tr><th>幣別</th><th>金額</th><th>年化<span class="tip" data-tip="這筆放貸成交時的市場利率（未扣手續費），方便對照市場 K 線；實際入袋的金額看右側收益欄（已扣 15%）">ⓘ</span></th><th>天期</th><th>每日預估收益<span class="tip" data-tip="這筆每天能拿到的淨利息＝金額 × 日利率 ×(1 − 15% 手續費)。只要還在放就每天進帳。">ⓘ</span></th><th>放滿預估報酬<span class="tip" data-tip="這筆放好放滿整個天期能拿到的淨利息＝金額 × 日利率 × 天期 ×(1 − 15% 手續費)。借款人提前還款會比這少。">ⓘ</span></th><th>開始時間</th><th>剩餘</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="chart-box">
+      <div class="chart-head">
+        <h3>錢包總額趨勢 <span class="muted small">每日收盤後各幣別餘額加總（含放貸中＋掛單中）</span></h3>
+        <div class="tf-btns" id="walletTrendRange">
+          <button class="tf" data-days="7">7 天</button>
+          <button class="tf active" data-days="30">30 天</button>
+          <button class="tf" data-days="60">60 天</button>
+          <button class="tf" data-days="0">全部</button>
+        </div>
+      </div>
+      <canvas id="walletTrendChart"></canvas>
     </div>
     <div class="charts">
       <div class="chart-box"><h3>每日收益（30 日，實際入帳）</h3><canvas id="earningsChart"></canvas></div>
@@ -123,6 +135,6 @@
 <footer class="muted small">資料僅供參考，放貸有風險。市場數據：Bitfinex 公開 API｜個人數據：Supabase</footer>
 
 <script src="config.js"></script>
-<script src="app.js?v=20260624b"></script>
+<script src="app.js?v=20260629a"></script>
 </body>
 </html>
