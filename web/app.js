@@ -779,6 +779,7 @@ function renderDailyApyChart() {
 // ── 錢包總額折線圖 ────────────────────────────────────────────
 let walletTrendEarnings = [];
 let walletTrendDays = 30;   // 預設顯示近 30 天
+let walletTrendMode = "combined"; // "combined" | "split"
 let walletTrendChart;
 
 function drawWalletTrendChart(earnings) {
@@ -788,7 +789,6 @@ function drawWalletTrendChart(earnings) {
 
 function renderWalletTrendChart() {
   // earnings 每筆 = {date, currency, amount, balance}
-  // 每日錢包總額 = 各幣別 balance 加總（balance 是當日利息入帳後的幣別餘額快照）
   const cutoffDate = walletTrendDays
     ? new Date(Date.now() - walletTrendDays * 86400000).toISOString().slice(0, 10)
     : "0000-00-00";
@@ -803,14 +803,28 @@ function renderWalletTrendChart() {
   }
   const dates = Object.keys(balMap).sort();
 
-  // 堆疊各幣別 → dataset per currency
-  const datasets = currencies.map((cur) => ({
-    label: cur,
-    data: dates.map((d) => (balMap[d]?.[cur] ?? null)),
-    backgroundColor: (SYMBOL_COLORS[`f${cur}`] || chartColors.good) + "55",
-    borderColor: SYMBOL_COLORS[`f${cur}`] || chartColors.good,
-    fill: true, pointRadius: 1.5, borderWidth: 1.5, tension: 0.15, spanGaps: true,
-  }));
+  let datasets, isStacked;
+  if (walletTrendMode === "combined") {
+    // 加總：單條線顯示所有幣別餘額加總
+    isStacked = false;
+    datasets = [{
+      label: "總計",
+      data: dates.map((d) => currencies.reduce((s, cur) => s + (balMap[d]?.[cur] ?? 0), 0)),
+      backgroundColor: chartColors.good + "40",
+      borderColor: chartColors.good,
+      fill: true, pointRadius: 1.5, borderWidth: 2, tension: 0.15, spanGaps: true,
+    }];
+  } else {
+    // 分幣別：堆疊各幣別 dataset
+    isStacked = true;
+    datasets = currencies.map((cur) => ({
+      label: cur,
+      data: dates.map((d) => (balMap[d]?.[cur] ?? null)),
+      backgroundColor: (SYMBOL_COLORS[`f${cur}`] || chartColors.good) + "55",
+      borderColor: SYMBOL_COLORS[`f${cur}`] || chartColors.good,
+      fill: true, pointRadius: 1.5, borderWidth: 1.5, tension: 0.15, spanGaps: true,
+    }));
+  }
 
   walletTrendChart?.destroy();
   walletTrendChart = new Chart($("walletTrendChart"), {
@@ -819,19 +833,21 @@ function renderWalletTrendChart() {
     options: {
       interaction: { mode: "index", intersect: false },
       plugins: {
-        legend: { display: currencies.length > 1 },
+        legend: { display: walletTrendMode === "split" && currencies.length > 1 },
         tooltip: {
           callbacks: {
             label: (ctx) => `${ctx.dataset.label}：$${(ctx.parsed.y || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
-            footer: (items) => "總計：$" + items.reduce((a, it) => a + (it.parsed.y || 0), 0)
-              .toLocaleString(undefined, { maximumFractionDigits: 2 }),
+            footer: walletTrendMode === "split"
+              ? (items) => "總計：$" + items.reduce((a, it) => a + (it.parsed.y || 0), 0)
+                  .toLocaleString(undefined, { maximumFractionDigits: 2 })
+              : undefined,
           },
         },
       },
       scales: {
-        x: { stacked: true },
+        x: { stacked: isStacked },
         y: {
-          stacked: true,
+          stacked: isStacked,
           ticks: { callback: (v) => "$" + v.toLocaleString(undefined, { maximumFractionDigits: 0 }) },
         },
       },
@@ -995,6 +1011,14 @@ document.querySelectorAll("#walletTrendRange .tf").forEach((btn) =>
     document.querySelectorAll("#walletTrendRange .tf").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     walletTrendDays = Number(btn.dataset.days);
+    renderWalletTrendChart();
+  }));
+
+document.querySelectorAll("#walletTrendSplit .tf").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#walletTrendSplit .tf").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    walletTrendMode = btn.dataset.mode;
     renderWalletTrendChart();
   }));
 
