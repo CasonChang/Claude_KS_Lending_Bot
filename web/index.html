@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Bitfinex 放貸 Dashboard</title>
-<link rel="stylesheet" href="style.css?v=20260629b">
+<link rel="stylesheet" href="style.css?v=20260630a">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -81,9 +81,15 @@
       <div class="chart-box">
         <div class="chart-head">
           <h3>每日實際年化 <span class="muted small">利息÷當日資金規模，出入金當天會失真</span></h3>
-          <div class="tf-btns" id="apyFeeToggle">
-            <button class="tf active" data-fee="net" title="已扣 15% 手續費，實際入袋">稅後（實拿）</button>
-            <button class="tf" data-fee="gross" title="還原成市場掛單利率，方便跟別人/市場 K 線比較">稅前（對照市場）</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <div class="tf-btns" id="apyFeeToggle">
+              <button class="tf active" data-fee="net" title="已扣 15% 手續費，實際入袋">稅後（實拿）</button>
+              <button class="tf" data-fee="gross" title="還原成市場掛單利率，方便跟別人/市場 K 線比較">稅前（對照市場）</button>
+            </div>
+            <div class="tf-btns" id="apyViewToggle">
+              <button class="tf active" data-view="combined">加總</button>
+              <button class="tf" data-view="split">分幣別</button>
+            </div>
           </div>
         </div>
         <canvas id="dailyApyChart"></canvas>
@@ -141,6 +147,6 @@
 <footer class="muted small">資料僅供參考，放貸有風險。市場數據：Bitfinex 公開 API｜個人數據：Supabase</footer>
 
 <script src="config.js"></script>
-<script src="app.js?v=20260629b"></script>
+<script src="app.js?v=20260630a"></script>
 </body>
 </html>

@@ -741,6 +741,7 @@ let dailyApyChart;
 
 let apyEarnings = [];      // 後端給的每日收益（amount 為稅後實際入帳）
 let apyFeeMode = "net";    // net=稅後實拿（預設）；gross=稅前（÷0.85 還原，對照市場掛單利率）
+let apyViewMode = "combined"; // combined=合計加權年化；split=各幣別分開
 
 function drawDailyApyChart(earnings) {
   apyEarnings = earnings || [];
@@ -755,22 +756,41 @@ function renderDailyApyChart() {
   const feeFactor = apyFeeMode === "gross" ? 1 / NET : 1;
   const dates = [...new Set(earnings.map((e) => e.date))].sort();
   const currencies = [...new Set(earnings.map((e) => e.currency))];
-  const datasets = currencies.map((cur) => ({
-    label: cur,
-    data: dates.map((d) => {
-      const e = earnings.find((x) => x.date === d && x.currency === cur);
-      if (!e || !e.balance || e.balance <= e.amount) return null;
-      return +(e.amount / (e.balance - e.amount) * 365 * 100 * feeFactor).toFixed(2);
-    }),
-    borderColor: SYMBOL_COLORS[cur] || chartColors.line,
-    pointRadius: 2, borderWidth: 1.5, tension: 0.2, spanGaps: true,
-  }));
+
+  let datasets;
+  if (apyViewMode === "combined") {
+    // 加權合計：總利息 ÷ 總資金規模（各幣別加總）
+    datasets = [{
+      label: "合計",
+      data: dates.map((d) => {
+        const rows = earnings.filter((x) => x.date === d);
+        const totalAmt = rows.reduce((s, x) => s + (x.amount || 0), 0);
+        const totalCap = rows.reduce((s, x) => s + Math.max((x.balance || 0) - (x.amount || 0), 0), 0);
+        if (!totalCap) return null;
+        return +(totalAmt / totalCap * 365 * 100 * feeFactor).toFixed(2);
+      }),
+      borderColor: chartColors.good,
+      pointRadius: 2, borderWidth: 2, tension: 0.2, spanGaps: true,
+    }];
+  } else {
+    datasets = currencies.map((cur) => ({
+      label: cur,
+      data: dates.map((d) => {
+        const e = earnings.find((x) => x.date === d && x.currency === cur);
+        if (!e || !e.balance || e.balance <= e.amount) return null;
+        return +(e.amount / (e.balance - e.amount) * 365 * 100 * feeFactor).toFixed(2);
+      }),
+      borderColor: SYMBOL_COLORS[cur] || chartColors.line,
+      pointRadius: 2, borderWidth: 1.5, tension: 0.2, spanGaps: true,
+    }));
+  }
+
   dailyApyChart?.destroy();
   dailyApyChart = new Chart($("dailyApyChart"), {
     type: "line",
     data: { labels: dates.map((d) => d.slice(5)), datasets },
     options: {
-      plugins: { legend: { display: currencies.length > 1 } },
+      plugins: { legend: { display: apyViewMode === "split" && currencies.length > 1 } },
       scales: { y: { ticks: { callback: (v) => v.toFixed(1) + "%" } } },
     },
   });
@@ -1002,6 +1022,14 @@ document.querySelectorAll("#apyFeeToggle .tf").forEach((btn) =>
     document.querySelectorAll("#apyFeeToggle .tf").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     apyFeeMode = btn.dataset.fee;
+    renderDailyApyChart();
+  }));
+
+document.querySelectorAll("#apyViewToggle .tf").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#apyViewToggle .tf").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    apyViewMode = btn.dataset.view;
     renderDailyApyChart();
   }));
 
