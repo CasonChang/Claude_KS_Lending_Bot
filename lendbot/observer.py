@@ -187,7 +187,11 @@ class LearningObserver:
         market = shadow = None
         if time.time() - self.last_snapshot >= self.snapshot_seconds:
             self.last_snapshot = time.time()
-            market, shadow = self._market_and_shadow(available, now_mts)
+            # 影子決策的本金＝子帳戶「可重新配置」的資金＝可用 ＋ 掛單中（尚未成交、
+            # 隨時能撤換的錢）。放貸中的本金已鎖住、不能收回，故不計入。
+            # 若只用 available，對方把錢全掛在單上時 available=0，我們就永遠算不出影子單。
+            offers_total = sum(o.amount for o in offers)
+            market, shadow = self._market_and_shadow(available + offers_total, now_mts)
         self._write_status(ts, offers, credits, wallet_total, available,
                            market, shadow,
                            snapshot=market is not None)
@@ -221,8 +225,11 @@ class LearningObserver:
                                                    "matured": held_days >= h.period * 0.98,
                                                    "backfill": True})
 
-    def _market_and_shadow(self, available: float, now_mts: int):
-        """市場 view ＋ 我們策略的影子決策（純計算，一張單都不會送出）。"""
+    def _market_and_shadow(self, shadow_capital: float, now_mts: int):
+        """市場 view ＋ 我們策略的影子決策（純計算，一張單都不會送出）。
+
+        shadow_capital＝子帳戶可重新配置的資金（可用＋掛單中），不含已鎖的放貸中本金。
+        """
         ticker = self.client.funding_ticker(self.symbol)
         book = self.client.funding_book(self.symbol, length=100)
         trades = self.client.funding_trades(
@@ -246,7 +253,7 @@ class LearningObserver:
         }
         shadow = [{"amount": p.amount, "rate": p.rate,
                    "apy": round(p.apy_pct, 2), "period": p.period}
-                  for p in build_ladder(available, view, self.scfg)]
+                  for p in build_ladder(shadow_capital, view, self.scfg)]
         return market, shadow
 
     def _write_status(self, ts: str, offers: list[Offer], credits: list[Credit],

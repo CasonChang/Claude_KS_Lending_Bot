@@ -300,51 +300,113 @@ function renderSubTrend(snaps) {
   });
 }
 
-// ── 掛單 / 影子 / 放貸中 / 事件 ──
+// ── 通用可排序表格 ──────────────────────────────────────────
+// 各表 <thead> 已在 HTML 定義欄位；這裡用欄位 accessor 讓點表頭可升/降冪排序。
+// 資料存 sortables[id]，切排序只重排、不重打 API。
+const sortables = {};  // id -> { cols, sort, rows, rowHtml, totalFn, limit, emptyMsg }
+const numCol = (get) => ({ get });                 // 數字欄，預設降冪
+const strCol = (get) => ({ get, str: true });      // 文字欄，預設升冪
 
-function offerRows(offers, withAge) {
-  if (!offers?.length) return `<tr><td colspan="${withAge ? 4 : 3}" class="muted">目前沒有掛單</td></tr>`;
-  const rows = offers.map((o) => `<tr><td>${money(o.amount)}</td>
-    <td>${pct(o.apy ?? dailyToApy(o.rate))}</td><td>${o.period} 天</td>
-    ${withAge ? `<td>${o.created ? fmtAge(o.created) : "—"}</td>` : ""}</tr>`).join("");
-  const tAmt = offers.reduce((a, o) => a + (o.amount || 0), 0);
-  return rows + `<tr class="total-row"><td>${money(tAmt)}</td><td colspan="${withAge ? 3 : 2}">合計 ${offers.length} 筆</td></tr>`;
+function initSortable(id, cols, defaultSort) {
+  $(id).querySelectorAll("thead th").forEach((th, idx) => {
+    const col = cols[idx];
+    if (!col || !col.get) return;
+    th.classList.add("sortable");
+    const arrow = document.createElement("span");
+    arrow.className = "sort-arrow";
+    th.appendChild(arrow);
+    th.addEventListener("click", () => {
+      const st = sortables[id];
+      if (st.sort.idx === idx) st.sort.dir *= -1;
+      else st.sort = { idx, dir: col.str ? 1 : -1 };
+      drawSortable(id);
+    });
+  });
+  sortables[id] = { cols, sort: defaultSort || { idx: -1, dir: -1 },
+                    rows: [], rowHtml: () => "", totalFn: null, limit: 0, emptyMsg: "無資料" };
 }
 
+function setSortable(id, rows, rowHtml, opts = {}) {
+  const st = sortables[id];
+  if (!st) return;
+  st.rows = rows || [];
+  st.rowHtml = rowHtml;
+  st.totalFn = opts.totalFn || null;
+  st.limit = opts.limit || 0;
+  st.emptyMsg = opts.emptyMsg || "無資料";
+  drawSortable(id);
+}
+
+function drawSortable(id) {
+  const st = sortables[id];
+  const ncol = st.cols.length;
+  const { idx, dir } = st.sort;
+  let rows = st.rows;
+  if (idx >= 0 && st.cols[idx] && st.cols[idx].get) {
+    const get = st.cols[idx].get;
+    rows = [...rows].sort((a, b) => {
+      const va = get(a), vb = get(b);
+      if (typeof va === "string") return dir * String(va).localeCompare(String(vb));
+      return dir * ((va || 0) - (vb || 0));
+    });
+  }
+  const shown = st.limit ? rows.slice(0, st.limit) : rows;
+  let html = shown.length ? shown.map(st.rowHtml).join("")
+    : `<tr><td colspan="${ncol}" class="muted">${st.emptyMsg}</td></tr>`;
+  if (st.totalFn && st.rows.length) html += st.totalFn(st.rows, shown.length);
+  $(id).querySelector("tbody").innerHTML = html;
+  $(id).querySelectorAll("thead th").forEach((th, i) => {
+    const a = th.querySelector(".sort-arrow");
+    if (!a) return;
+    const active = idx === i;
+    a.textContent = active ? (dir > 0 ? "▲" : "▼") : "⇅";
+    a.classList.toggle("active", active);
+  });
+}
+
+// ── 掛單 / 影子 / 放貸中 / 事件 ──
+
+const offerApy = (o) => o.apy ?? dailyToApy(o.rate);
+const creditApy = (c) => c.apy ?? dailyToApy(c.rate);
+
+const offerRowHtml = (withAge) => (o) =>
+  `<tr><td>${money(o.amount)}</td><td>${pct(offerApy(o))}</td><td>${o.period} 天</td>` +
+  (withAge ? `<td>${o.created ? fmtAge(o.created) : "—"}</td>` : "") + `</tr>`;
+const offerTotal = (withAge) => (all) => {
+  const tAmt = all.reduce((a, o) => a + (o.amount || 0), 0);
+  return `<tr class="total-row"><td>${money(tAmt)}</td><td colspan="${withAge ? 3 : 2}">合計 ${all.length} 筆</td></tr>`;
+};
+
 function renderOffersTables(M, S) {
-  $("offersMain").querySelector("tbody").innerHTML = offerRows(M.offers, false);
-  $("offersSub").querySelector("tbody").innerHTML = offerRows(S.offers, true);
+  setSortable("offersMain", M.offers, offerRowHtml(false), { totalFn: offerTotal(false), emptyMsg: "目前沒有掛單" });
+  setSortable("offersSub", S.offers, offerRowHtml(true), { totalFn: offerTotal(true), emptyMsg: "目前沒有掛單" });
 }
 
 function renderShadow(subStatus) {
   const shadow = subStatus?.shadow || [];
   const mkt = subStatus?.market || {};
   const actual = subStatus?.offers || [];
-  $("shadowActual").querySelector("tbody").innerHTML = offerRows(actual, false);
-  $("shadowOurs").querySelector("tbody").innerHTML = shadow.length
-    ? offerRows(shadow, false)
-    : `<tr><td colspan="3" class="muted">快照當下子帳戶沒有可用資金（全掛出去了）→ 我們也無單可掛</td></tr>`;
+  setSortable("shadowActual", actual, offerRowHtml(false), { totalFn: offerTotal(false), emptyMsg: "快照當下子帳戶沒有掛單" });
+  setSortable("shadowOurs", shadow, offerRowHtml(false), { totalFn: offerTotal(false),
+    emptyMsg: "快照當下子帳戶資金已全部放貸出去（無可重配置資金）→ 我們也無單可掛" });
   $("shadowMarket").textContent = mkt.anchor_apy != null
     ? `快照 ${mkt.snap_ts ? fmtAge(mkt.snap_ts) + "前" : "—"}｜市場：錨點 ${pct(mkt.anchor_apy)}・IQM ${pct(mkt.iqm_apy)}・FRR ${pct(mkt.frr_apy)}・隊首 ${pct(mkt.best_ask_apy)}・保底 ${pct(mkt.floor_apy)}${mkt.spike ? "・🔥SPIKE" : ""}`
     : "（還沒有快照）";
 }
 
-function creditRows(credits) {
-  if (!credits?.length) return `<tr><td colspan="4" class="muted">目前沒有放貸中的部位</td></tr>`;
-  const top = [...credits].sort((a, b) => (b.amount || 0) - (a.amount || 0)).slice(0, 12);
-  const rows = top.map((c) => `<tr><td>${money(c.amount)}</td>
-    <td>${pct(c.apy ?? dailyToApy(c.rate))}</td><td>${c.period} 天</td>
-    <td>${c.opened ? fmtDate(c.opened) : "—"}</td></tr>`).join("");
-  const tAmt = credits.reduce((a, c) => a + (c.amount || 0), 0);
-  const wApy = tAmt ? credits.reduce((a, c) => a + (c.amount || 0) * (c.apy ?? dailyToApy(c.rate)), 0) / tAmt : 0;
-  const more = credits.length > 12 ? `（顯示前 12 筆）` : "";
-  return rows + `<tr class="total-row"><td>${money(tAmt)}</td><td>${pct(wApy)}</td>
-    <td colspan="2">合計 ${credits.length} 筆 ${more}</td></tr>`;
+const creditRowHtml = (c) =>
+  `<tr><td>${money(c.amount)}</td><td>${pct(creditApy(c))}</td><td>${c.period} 天</td>` +
+  `<td>${c.opened ? fmtDate(c.opened) : "—"}</td></tr>`;
+function creditTotal(all, shownCount) {
+  const tAmt = all.reduce((a, c) => a + (c.amount || 0), 0);
+  const wApy = tAmt ? all.reduce((a, c) => a + (c.amount || 0) * creditApy(c), 0) / tAmt : 0;
+  const tail = all.length > shownCount ? `顯示 ${shownCount} / 共 ${all.length} 筆` : `合計 ${all.length} 筆`;
+  return `<tr class="total-row"><td>${money(tAmt)}</td><td>${pct(wApy)}</td><td colspan="2">${tail}</td></tr>`;
 }
 
 function renderCreditsTables(M, S) {
-  $("creditsMain").querySelector("tbody").innerHTML = creditRows(M.credits);
-  $("creditsSub").querySelector("tbody").innerHTML = creditRows(S.credits);
+  setSortable("creditsMain", M.credits, creditRowHtml, { totalFn: creditTotal, limit: 25, emptyMsg: "目前沒有放貸中的部位" });
+  setSortable("creditsSub", S.credits, creditRowHtml, { totalFn: creditTotal, limit: 25, emptyMsg: "目前沒有放貸中的部位" });
 }
 
 const ACTION_LABEL = {
@@ -352,19 +414,19 @@ const ACTION_LABEL = {
   "cancel": ["撤單", "ev-cancel"], "fill": ["成交", "ev-fill"],
   "closed_early": ["提前還款", "ev-close"], "closed_matured": ["到期還款", "ev-close"],
 };
+const actionApy = (a) => { const d = a.detail || {}; return d.apy ?? (d.rate != null ? dailyToApy(d.rate) : null); };
+
+const actionRowHtml = (a) => {
+  const d = a.detail || {};
+  const [label, cls] = ACTION_LABEL[a.action] || [a.action, ""];
+  const apy = actionApy(a);
+  return `<tr><td>${fmtDate(a.ts)}</td><td class="${cls}">${label}</td>` +
+    `<td>${money(d.amount)}</td><td>${apy != null ? pct(apy) : "—"}</td><td>${d.period ?? "—"} 天</td></tr>`;
+};
 
 function renderMainActions(actions) {
-  const rows = actions.filter((a) => (a.detail || {}).symbol === SYM).slice(0, 60);
-  $("actionsMain").querySelector("tbody").innerHTML = rows.length
-    ? rows.map((a) => {
-        const d = a.detail || {};
-        const [label, cls] = ACTION_LABEL[a.action] || [a.action, ""];
-        const apy = d.apy ?? (d.rate != null ? dailyToApy(d.rate) : null);
-        return `<tr><td>${fmtDate(a.ts)}</td><td class="${cls}">${label}</td>
-          <td>${money(d.amount)}</td><td>${apy != null ? pct(apy) : "—"}</td>
-          <td>${d.period ?? "—"} 天</td></tr>`;
-      }).join("")
-    : `<tr><td colspan="5" class="muted">還沒有紀錄</td></tr>`;
+  const rows = actions.filter((a) => (a.detail || {}).symbol === SYM);
+  setSortable("actionsMain", rows, actionRowHtml, { limit: 60, emptyMsg: "還沒有紀錄" });
 }
 
 const EVENT_LABEL = {
@@ -373,20 +435,43 @@ const EVENT_LABEL = {
   credit_new: ["放貸成交", "ev-fill"], credit_closed: ["放貸結束", "ev-close"],
 };
 
+const eventRowHtml = (e) => {
+  const [label, cls] = EVENT_LABEL[e.event] || [e.event, ""];
+  let extra = "";
+  if (e.event === "credit_closed" && e.detail) {
+    extra = e.detail.matured ? "・放滿" : `・持有 ${e.detail.held_days} 天`;
+  }
+  return `<tr><td>${fmtDate(e.ts)}</td><td class="${cls}">${label}${extra}</td>` +
+    `<td>${money(e.amount)}</td><td>${e.apy != null ? pct(e.apy) : "—"}</td><td>${e.period ?? "—"} 天</td></tr>`;
+};
+
 function renderSubEvents(events) {
-  const rows = events.slice(0, 60);
-  $("eventsSub").querySelector("tbody").innerHTML = rows.length
-    ? rows.map((e) => {
-        const [label, cls] = EVENT_LABEL[e.event] || [e.event, ""];
-        let extra = "";
-        if (e.event === "credit_closed" && e.detail) {
-          extra = e.detail.matured ? "・放滿" : `・持有 ${e.detail.held_days} 天`;
-        }
-        return `<tr><td>${fmtDate(e.ts)}</td><td class="${cls}">${label}${extra}</td>
-          <td>${money(e.amount)}</td><td>${e.apy != null ? pct(e.apy) : "—"}</td>
-          <td>${e.period ?? "—"} 天</td></tr>`;
-      }).join("")
-    : `<tr><td colspan="5" class="muted">還沒有事件（觀察者啟動後，掛單有變動才會記）</td></tr>`;
+  setSortable("eventsSub", events || [], eventRowHtml, { limit: 60, emptyMsg: "還沒有事件（觀察者啟動後，掛單有變動才會記）" });
+}
+
+// 一次性掛上各表的可排序表頭（DOM 已就緒；資料由 renderAll 灌入）
+function initAllSortables() {
+  const offerCols = [numCol((o) => o.amount), numCol(offerApy), numCol((o) => o.period)];
+  const offerColsAge = [...offerCols, numCol((o) => (o.created ? new Date(o.created).getTime() : 0))];
+  const creditCols = [numCol((c) => c.amount), numCol(creditApy), numCol((c) => c.period),
+                      numCol((c) => (c.opened ? new Date(c.opened).getTime() : 0))];
+  const actionCols = [numCol((a) => new Date(a.ts).getTime()),
+                      strCol((a) => (ACTION_LABEL[a.action]?.[0] || a.action)),
+                      numCol((a) => (a.detail || {}).amount || 0),
+                      numCol((a) => actionApy(a) || 0),
+                      numCol((a) => (a.detail || {}).period || 0)];
+  const eventCols = [numCol((e) => new Date(e.ts).getTime()),
+                     strCol((e) => (EVENT_LABEL[e.event]?.[0] || e.event)),
+                     numCol((e) => e.amount || 0), numCol((e) => e.apy || 0),
+                     numCol((e) => e.period || 0)];
+  initSortable("offersMain", offerCols, { idx: 0, dir: -1 });
+  initSortable("offersSub", offerColsAge, { idx: 0, dir: -1 });
+  initSortable("shadowActual", offerCols, { idx: 0, dir: -1 });
+  initSortable("shadowOurs", offerCols, { idx: 0, dir: -1 });
+  initSortable("creditsMain", creditCols, { idx: 0, dir: -1 });
+  initSortable("creditsSub", creditCols, { idx: 0, dir: -1 });
+  initSortable("actionsMain", actionCols, { idx: 0, dir: -1 });  // 預設時間新→舊
+  initSortable("eventsSub", eventCols, { idx: 0, dir: -1 });
 }
 
 function renderReviews(reviews) {
@@ -527,6 +612,7 @@ document.querySelectorAll("#apyFeeToggle .tf").forEach((btn) =>
     if (lastData) renderApyCompare(lastData);
   }));
 
+initAllSortables();
 initKChart();
 startKWs();
 
