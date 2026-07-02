@@ -18,10 +18,21 @@ class Env:
     tg_chat_id: str = ""
     supabase_url: str = ""
     supabase_key: str = ""
+    # 學習模式：唯讀側錄子帳戶（交由外部專業策略操作），見 lendbot/observer.py
+    learning_enabled: bool = False
+    monitor_bfx_key: str = ""       # 子帳戶「唯讀」key（只開 Wallets/Funding/Ledgers 讀）
+    monitor_bfx_secret: str = ""
+    learning_symbol: str = "fUSD"
+    learning_poll_seconds: int = 60
+    learning_snapshot_minutes: int = 15
 
     @property
     def has_bfx_auth(self) -> bool:
         return bool(self.bfx_key and self.bfx_secret)
+
+    @property
+    def has_monitor_auth(self) -> bool:
+        return bool(self.monitor_bfx_key and self.monitor_bfx_secret)
 
     @property
     def has_telegram(self) -> bool:
@@ -79,5 +90,12 @@ def load_config(config_path: Path | None = None) -> Config:
         tg_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
         supabase_url=os.getenv("SUPABASE_URL", "").strip().rstrip("/"),
         supabase_key=os.getenv("SUPABASE_SERVICE_KEY", "").strip(),
+        learning_enabled=os.getenv("LEARNING_ENABLED", "").strip().lower()
+                         in ("1", "true", "yes"),
+        monitor_bfx_key=os.getenv("MONITOR_BFX_KEY", "").strip(),
+        monitor_bfx_secret=os.getenv("MONITOR_BFX_SECRET", "").strip(),
+        learning_symbol=os.getenv("LEARNING_SYMBOL", "fUSD").strip() or "fUSD",
+        learning_poll_seconds=int(os.getenv("LEARNING_POLL_SECONDS", "60") or 60),
+        learning_snapshot_minutes=int(os.getenv("LEARNING_SNAPSHOT_MINUTES", "15") or 15),
     )
     return Config(env=env, raw=raw)

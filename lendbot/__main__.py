@@ -4,6 +4,7 @@
 """
 import socket
 import sys
+import threading
 
 from .bfx_client import BfxClient
 from .config import load_config
@@ -46,6 +47,19 @@ def main():
         engine.run_cycle()
         log.info("單循環測試完成")
         return
+
+    # 學習模式：唯讀側錄子帳戶（LEARNING_ENABLED=1 + MONITOR_BFX_KEY/SECRET）。
+    # daemon thread、與主策略完全隔離；觀察者掛掉不影響正式循環。
+    if cfg.env.learning_enabled:
+        if cfg.env.has_monitor_auth:
+            from .observer import LearningObserver
+            observer = LearningObserver(cfg, store)
+            threading.Thread(target=observer.run_forever, daemon=True,
+                             name="learning-observer").start()
+            tg.notify("🧪 學習模式已開啟：開始唯讀側錄子帳戶（不影響主策略）")
+        else:
+            log.warning("LEARNING_ENABLED 已開但缺 MONITOR_BFX_KEY/SECRET，觀察者未啟動")
+
     engine.run_forever()
 
 

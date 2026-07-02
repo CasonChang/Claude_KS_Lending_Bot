@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>策略學習對照</title>
+<link rel="stylesheet" href="style.css?v=20260630a">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<style>
+  /* 本頁專用：左右對照 */
+  .grid2 { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; align-items: start; }
+  @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+  .acct-main { color: #4fc3f7; }
+  .acct-sub { color: #ffb74d; }
+  #compareTable td:nth-child(2), #compareTable td:nth-child(3) { font-variant-numeric: tabular-nums; }
+  .ev-open { color: #4fc3f7; } .ev-cancel { color: #8b98a9; }
+  .ev-fill { color: #4caf80; } .ev-close { color: #ffb74d; }
+  .rv-body h1 { font-size: 1.2rem; } .rv-body h2 { font-size: 1rem; margin-top: 1em; }
+  .rv-body table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+  .rv-body th, .rv-body td { border: 1px solid var(--border); padding: 6px 8px; font-size: .85rem; }
+  .rv-body blockquote { border-left: 3px solid #4fc3f7; margin: 8px 0; padding: 4px 12px; color: #8b98a9; }
+  .rv-body code { background: #1c2430; padding: 1px 5px; border-radius: 4px; }
+  .rv-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧪 策略學習對照</h1>
+  <span id="lastUpdate" class="muted"></span>
+  <span class="muted small" style="margin-left:auto"><span class="acct-main">主帳戶＝我們的策略</span>｜<span class="acct-sub">子帳戶＝外部專業策略（唯讀側錄）</span></span>
+</header>
+
+<section>
+  <div id="lockPanel" class="lock-panel">
+    <p class="muted">輸入 Dashboard 密碼以檢視學習對照</p>
+    <div class="lock-row">
+      <input type="password" id="tokenInput" placeholder="Dashboard 密碼">
+      <button id="unlockBtn">解鎖</button>
+    </div>
+    <p id="lockError" class="error hidden">密碼錯誤或尚未設定 Supabase</p>
+  </div>
+
+  <div id="panel" class="hidden">
+    <div class="status-bar">
+      <span id="obsBadge" class="badge">—</span>
+      <span id="obsInfo" class="muted small">—</span>
+      <button id="refreshBtn" class="ghost" title="立即刷新">⟳ 刷新</button>
+      <button id="lockBtn" class="ghost">登出</button>
+    </div>
+
+    <div class="cards">
+      <div class="card"><div class="label">雙帳戶 USD 合計</div><div class="value" id="cBoth">—</div></div>
+      <div class="card"><div class="label"><span class="acct-main">主帳戶</span> USD 總額</div><div class="value" id="cMain">—</div></div>
+      <div class="card"><div class="label"><span class="acct-sub">子帳戶</span> USD 總額</div><div class="value" id="cSub">—</div></div>
+      <div class="card"><div class="label">近 7 日收益 主 vs 子</div><div class="value" id="cEarn7">—</div></div>
+    </div>
+
+    <div class="chart-box">
+      <h3>總對照（USD）<span class="muted small">　年化「稅前」＝市場掛單利率口徑；「稅後」＝扣 15% 手續費實拿</span></h3>
+      <table id="compareTable"><thead>
+        <tr><th>指標</th><th class="acct-main">主帳戶（我們）</th><th class="acct-sub">子帳戶（對方）</th><th>領先</th></tr>
+      </thead><tbody></tbody></table>
+    </div>
+
+    <div class="chart-box">
+      <div class="chart-head">
+        <h3>fUSD 成交利率 K 線（年化 %）</h3>
+        <div class="tf-btns" id="kTfs">
+          <button class="tf" data-tf="15m">15m</button>
+          <button class="tf active" data-tf="1h">1h</button>
+          <button class="tf" data-tf="6h">6h</button>
+          <button class="tf" data-tf="1D">1D</button>
+        </div>
+      </div>
+      <div class="ohlc muted small" id="kOhlc">（滑鼠移到 K 棒上顯示開高低收）</div>
+      <div class="kchart" id="kchart"></div>
+    </div>
+
+    <div class="charts">
+      <div class="chart-box">
+        <h3>每日收益對比 <span class="muted small">實際入帳（稅後）</span></h3>
+        <canvas id="earnCompareChart"></canvas>
+      </div>
+      <div class="chart-box">
+        <div class="chart-head">
+          <h3>每日實際年化對比</h3>
+          <div class="tf-btns" id="apyFeeToggle">
+            <button class="tf active" data-fee="net">稅後（實拿）</button>
+            <button class="tf" data-fee="gross">稅前（對照市場）</button>
+          </div>
+        </div>
+        <canvas id="apyCompareChart"></canvas>
+      </div>
+    </div>
+
+    <div class="charts">
+      <div class="chart-box">
+        <h3>子帳戶規模趨勢 <span class="muted small">每 15 分快照</span></h3>
+        <canvas id="subTrendChart"></canvas>
+      </div>
+      <div class="chart-box">
+        <h3>子帳戶加權年化趨勢 <span class="muted small">放貸中資金的加權掛單利率（稅前）</span></h3>
+        <canvas id="subApyTrendChart"></canvas>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="chart-box">
+        <h3><span class="acct-main">主帳戶</span> 目前掛單（fUSD）</h3>
+        <table id="offersMain"><thead><tr><th>金額</th><th>年化</th><th>天期</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="chart-box">
+        <h3><span class="acct-sub">子帳戶</span> 目前掛單</h3>
+        <table id="offersSub"><thead><tr><th>金額</th><th>年化</th><th>天期</th><th>已掛</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div class="chart-box">
+      <h3>🪞 影子決策對照 <span class="muted small" id="shadowInfo">同一時刻、同一份子帳戶可用餘額下，「我們的策略會掛什麼」（純計算、不下單，每 15 分更新）</span></h3>
+      <div class="grid2">
+        <div>
+          <h3 class="acct-sub">子帳戶實際掛單（快照當下）</h3>
+          <table id="shadowActual"><thead><tr><th>金額</th><th>年化</th><th>天期</th></tr></thead><tbody></tbody></table>
+        </div>
+        <div>
+          <h3 class="acct-main">我們的影子掛單</h3>
+          <table id="shadowOurs"><thead><tr><th>金額</th><th>年化</th><th>天期</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+      <p class="muted small" id="shadowMarket" style="margin-top:8px">—</p>
+    </div>
+
+    <div class="grid2">
+      <div class="chart-box">
+        <h3><span class="acct-main">主帳戶</span> 放貸中（fUSD）</h3>
+        <table id="creditsMain"><thead><tr><th>金額</th><th>年化</th><th>天期</th><th>開始</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="chart-box">
+        <h3><span class="acct-sub">子帳戶</span> 放貸中</h3>
+        <table id="creditsSub"><thead><tr><th>金額</th><th>年化</th><th>天期</th><th>開始</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="chart-box">
+        <h3><span class="acct-main">主帳戶</span> 動作紀錄（fUSD，最近 60 筆）</h3>
+        <table id="actionsMain"><thead><tr><th>時間</th><th>動作</th><th>金額</th><th>年化</th><th>天期</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="chart-box">
+        <h3><span class="acct-sub">子帳戶</span> 事件流水（最近 60 筆）<span class="muted small">同輪「撤單＋新掛」＝調單</span></h3>
+        <table id="eventsSub"><thead><tr><th>時間</th><th>事件</th><th>金額</th><th>年化</th><th>天期</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div class="chart-box">
+      <h3>📝 每日學習檢討</h3>
+      <div class="rv-tabs" id="rvTabs"></div>
+      <div class="rv-body" id="rvBody"><p class="muted">尚無檢討。每日台北 09:30 後由 agent 產出。</p></div>
+    </div>
+  </div>
+</section>
+
+<footer class="muted small">學習期專用頁（無主頁連結）。子帳戶僅唯讀側錄，我們無法對其下單。</footer>
+
+<script src="config.js"></script>
+<script src="learn.js?v=20260702a"></script>
+</body>
+</html>

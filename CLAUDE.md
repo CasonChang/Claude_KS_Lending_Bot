@@ -55,16 +55,37 @@ Bitfinex P2P 放貸自動化機器人。使用者說**繁體中文**，回覆請
 網頁從 Dashboard 右上「📝 每週檢討」連結（`web/reviews.html`）用同組密碼解鎖檢視。
 一次性安裝：`supabase/migrations/007_weekly_reviews.sql`（建表＋擴充 RPC）需先在 Supabase SQL Editor 跑一次。
 
+## 策略學習模式（2026-07-02 建置）
+
+主帳戶跑我們的正式策略、**子帳戶交由外部專業放貸策略操作**（⚠️ repo 公開，
+程式/文件/commit 一律稱「子帳戶策略」，**不寫是哪個服務**），雙方各約 10,000 USD 比績效。
+
+- **觀察者** `lendbot/observer.py`：Zeabur env `LEARNING_ENABLED=1` ＋子帳戶唯讀 key
+  `MONITOR_BFX_KEY/SECRET` 時，以 daemon thread 啟動（跟正式 bot 同一個 service）。
+  每 60 秒唯讀輪詢子帳戶、差異偵測寫事件、每 15 分完整快照＋影子決策（我們的策略
+  對同一狀態會掛什麼，純計算）。**程式路徑不含任何下單呼叫，我們無法操作子帳戶。**
+- **隱藏比較頁**：`web/learn.html`（**主頁不放連結**，網址
+  `casonchang.github.io/Claude_KS_Lending_Bot/learn.html`，同 Dashboard 密碼，
+  RPC `learning_data`）。
+- **每日學習檢討**：SOP 見 [`reviews/learning/README.md`](reviews/learning/README.md)。
+  結算窗口＝UTC 日（Bitfinex 利息 00:00 UTC＝台北 08:00 入帳），每天台北 09:30 後跑，
+  寫 `reviews/learning/YYYY-MM-DD.md` → `python tools/post_learning_review.py <檔>` → push。
+- **鐵則**：主帳戶策略只有使用者明確下令才能改，改了記在當日檢討「主帳戶策略變更紀錄」。
+- 一次性安裝：`supabase/migrations/010_learning.sql` 先在 Supabase SQL Editor 跑一次。
+- 設計脈絡：`research/learning_monitor_design.md`。
+
 ## Telegram 指令
 
 `/status` `/rates` `/earnings` `/review`（昨日策略檢討）`/capital`（立即偵測入金/出金/兌換）
 `/go` `/lend` `/pause` `/resume`。
 
-## 現況快照（2026-06-18）
+## 現況快照（2026-07-02）
 
 - Zeabur 真實模式運行中；本機已停。帳戶 fUSD + fUST 放貸中（規模約 1 萬鎬，使用者陸續加碼，
   目標實測一個月真實月報酬）。
 - 已上線功能：churn 修復、每日 9am 報告 + 策略檢討、錨點年化 7 天圖、資金變動自動偵測
   （入金/出金/兌換 → DB + 網頁 + 推播，每 15 分同步）、成交/結束推播合併、手機 RWD、
-  網頁費用基準釐清。
+  網頁費用基準釐清、錢包趨勢圖與每日年化圖的加總/分幣別切換。
+- 學習模式程式已就緒，等使用者：跑 migration 010、開子帳戶、雙邊各入 1 萬 USD、
+  在 Zeabur 設 `LEARNING_ENABLED=1`＋`MONITOR_BFX_KEY/SECRET`（唯讀）。
 - repo：`github.com/CasonChang/Claude_KS_Lending_Bot`｜Pages：`casonchang.github.io/Claude_KS_Lending_Bot/`

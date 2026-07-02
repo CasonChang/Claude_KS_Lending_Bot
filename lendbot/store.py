@@ -107,11 +107,43 @@ class Store:
             "amount": round(amount, 6), "kind": kind, "description": description,
         }, on_conflict="id")
 
-    def prune_old(self, days_snapshots: int = 30, days_actions: int = 90) -> None:
+    # ── 學習模式（子帳戶唯讀側錄，見 lendbot/observer.py）──
+
+    def update_learning_status(self, symbol: str, status: dict) -> bool:
+        """子帳戶現況單列 upsert（每次輪詢更新，網頁看最後觀測時間）。"""
+        return self.upsert("learning_status", {"symbol": symbol, **status},
+                           on_conflict="symbol")
+
+    def save_learning_snapshot(self, row: dict) -> bool:
+        return self.insert("learning_snapshots", row)
+
+    def save_learning_event(self, ts_iso: str, event: str, symbol: str, *,
+                            offer_id: int | None = None, amount: float | None = None,
+                            rate: float | None = None, apy: float | None = None,
+                            period: int | None = None, detail: dict | None = None) -> bool:
+        return self.insert("learning_events", {
+            "ts": ts_iso, "event": event, "symbol": symbol, "offer_id": offer_id,
+            "amount": amount, "rate": rate, "apy": apy, "period": period,
+            "detail": detail,
+        })
+
+    def save_learning_earning(self, date_str: str, currency: str, amount: float,
+                              balance: float | None = None) -> bool:
+        row = {"date": date_str, "currency": currency, "amount": round(amount, 6)}
+        if balance is not None:
+            row["balance"] = round(balance, 2)
+        return self.upsert("learning_earnings", row, on_conflict="date,currency")
+
+    def prune_old(self, days_snapshots: int = 30, days_actions: int = 90,
+                  days_learning: int = 90) -> None:
         """清掉過舊資料，避免免費額度爆掉。"""
         from datetime import datetime, timedelta, timezone
         cut_snap = (datetime.now(timezone.utc) - timedelta(days=days_snapshots)).isoformat()
         cut_act = (datetime.now(timezone.utc) - timedelta(days=days_actions)).isoformat()
+        cut_learn = (datetime.now(timezone.utc) - timedelta(days=days_learning)).isoformat()
         self._request("DELETE", "market_snapshots", params={"ts": f"lt.{cut_snap}"})
         self._request("DELETE", "credits_snapshots", params={"ts": f"lt.{cut_snap}"})
         self._request("DELETE", "actions_log", params={"ts": f"lt.{cut_act}"})
+        # 學習表留 90 天（學習期 1 週～1 個月，留足回顧空間）
+        self._request("DELETE", "learning_snapshots", params={"ts": f"lt.{cut_learn}"})
+        self._request("DELETE", "learning_events", params={"ts": f"lt.{cut_learn}"})
