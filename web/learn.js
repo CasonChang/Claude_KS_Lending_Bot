@@ -107,9 +107,19 @@ function sideMetrics(status, earnings) {
     creditsCount: s.credits_count ?? s.lent_count ?? credits.length,
     wApyGross: wApy, wApyNet: wApy * NET, avgPeriod,
     earnToday: rows.filter((e) => e.date === today).reduce((a, e) => a + e.amount, 0),
-    earn7: sumSince(7), earn30: sumSince(30), apy7,
+    earn7: sumSince(7),
+    // 累計收益（自起跑）：RPC 已把 earnings 過濾到起跑日之後，這裡直接全加
+    earnCum: rows.reduce((a, e) => a + (e.amount || 0), 0),
+    apy7,
     ts: s.ts, offers, credits,
   };
+}
+
+// 起跑日 → 「第 N 天」（含起跑日當天算第 1 天）
+function learningDayCount(startStr) {
+  if (!startStr) return null;
+  const start = new Date(startStr + "T00:00:00Z").getTime();
+  return Math.max(1, Math.floor((Date.now() - start) / 86400000) + 1);
 }
 
 // ═══════════ 渲染 ═══════════
@@ -124,14 +134,19 @@ function renderAll(d) {
   const M = sideMetrics(mainStatus, d.main_earnings);
   const S = sideMetrics(subStatus, d.learning_earnings);
 
+  // 起跑資訊（所有對比皆自此日起算，主帳戶過往歷史不計入）
+  const startStr = d.learning_start;
+  const day = learningDayCount(startStr);
+  const startInfo = startStr ? `｜🏁 起跑 ${startStr}（第 ${day} 天）` : "";
+
   // 觀察狀態（輪詢約 1 分鐘一次；超過 5 分沒更新就標紅）
   if (!subStatus) {
     $("obsBadge").textContent = "⚪ 尚未開始觀察";
-    $("obsInfo").textContent = "等待 LEARNING_ENABLED 開啟＋觀察者第一筆回報";
+    $("obsInfo").textContent = "等待 LEARNING_ENABLED 開啟＋觀察者第一筆回報" + startInfo;
   } else {
     const ageMin = (Date.now() - new Date(subStatus.ts).getTime()) / 60000;
     $("obsBadge").textContent = ageMin < 5 ? "🟢 側錄中" : "🔴 觀測中斷";
-    $("obsInfo").textContent = `子帳戶最後觀測 ${fmtAge(subStatus.ts)}前（每分鐘輪詢、變動才記事件；快照/影子每 15 分）`;
+    $("obsInfo").textContent = `子帳戶最後觀測 ${fmtAge(subStatus.ts)}前（每分鐘輪詢、變動才記事件；快照/影子每 15 分）` + startInfo;
   }
   $("lastUpdate").textContent = "更新 " + new Date().toLocaleTimeString("zh-TW", { hour12: false });
 
@@ -168,7 +183,7 @@ function renderCompareTable(M, S) {
     ["加權平均天期", `${num(M.avgPeriod, 1)} 天`, `${num(S.avgPeriod, 1)} 天`, 0, 0, null],
     ["今日收益", "$" + M.earnToday.toFixed(4), "$" + S.earnToday.toFixed(4), M.earnToday, S.earnToday, true],
     ["近 7 日收益", "$" + M.earn7.toFixed(4), "$" + S.earn7.toFixed(4), M.earn7, S.earn7, true],
-    ["近 30 日收益", "$" + M.earn30.toFixed(4), "$" + S.earn30.toFixed(4), M.earn30, S.earn30, true],
+    ["累計收益（自起跑）", "$" + M.earnCum.toFixed(4), "$" + S.earnCum.toFixed(4), M.earnCum, S.earnCum, true],
     ["近 7 日實際年化（稅後）", pct(M.apy7), pct(S.apy7), M.apy7, S.apy7, true],
   ];
   $("compareTable").querySelector("tbody").innerHTML = rows.map(([label, mv, sv, mnum, snum, judge]) => {
