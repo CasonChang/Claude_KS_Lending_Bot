@@ -98,12 +98,16 @@ def diff_events(prev_offers: dict[int, Offer], cur_offers: dict[int, Offer],
                            "period": cur_o.period,
                            "detail": {"from": prev_o.amount, "to": cur_o.amount}})
 
-    # 放貸：新增（成交）
+    # 放貸：新增（成交）。已由上面 offer_filled 記到的成交（matched）不再重複記，
+    # 同一筆成交只留一則事件。credit_new 只剩「沒對應到消失掛單」的情況——
+    # 也就是掛單在兩次輪詢之間「掛出又秒成交」、我們沒捕捉到 offer 的快速成交。
     for cid in sorted(cur_credits.keys() - prev_credits.keys()):
+        if cid in matched:
+            continue
         c = cur_credits[cid]
         events.append({"event": "credit_new", "offer_id": c.id, "amount": c.amount,
                        "rate": c.rate, "apy": _apy(c.rate), "period": c.period,
-                       "detail": None})
+                       "detail": {"fast_fill": True}})
 
     # 放貸：消失（還款/到期）
     for cid in sorted(prev_credits.keys() - cur_credits.keys()):
@@ -140,9 +144,25 @@ class LearningObserver:
 
     # ── 主迴圈 ──────────────────────────────────────────────
 
+    def _seed_processed_closed(self):
+        """從 DB 載入近 3 天已記錄過的結束單 id，避免重啟（Zeabur redeploy）後
+        in-memory 去重集合被清空、backfill 把同一筆結束重複記進 learning_events。"""
+        cut = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+        rows = self.store.select("learning_events", {
+            "select": "offer_id", "event": "eq.credit_closed",
+            "ts": f"gte.{cut}", "limit": "10000"})
+        ids = {r["offer_id"] for r in rows if r.get("offer_id") is not None}
+        self.processed_closed.update(ids)
+        if ids:
+            log.info("學習觀察者：從 DB 載入 %d 筆已記錄結束單（防重複）", len(ids))
+
     def run_forever(self):
         log.info("學習觀察者啟動（唯讀）：%s｜輪詢 %ds｜快照 %d 分",
                  self.symbol, self.poll_seconds, self.snapshot_seconds // 60)
+        try:
+            self._seed_processed_closed()
+        except Exception:
+            log.exception("學習觀察者：載入已記錄結束單失敗（不影響後續）")
         while True:
             try:
                 self.poll_once()
@@ -204,7 +224,7 @@ class LearningObserver:
 
     def _reconcile_closed_history(self, ts: str):
         try:
-            hist = self.client.credits_history(self.symbol, limit=10)
+            hist = self.client.credits_history(self.symbol, limit=25)
         except BfxError as e:
             log.warning("子帳戶結束歷史查詢失敗: %s", e)
             return
@@ -216,13 +236,16 @@ class LearningObserver:
             if h.id in self.processed_closed:
                 continue
             self.processed_closed.add(h.id)
-            held_days = max(0.0, (h.mts_close - h.mts_opening) / 86_400_000)
+            # 歷史有時缺結束時間戳（mts_close=0）→ 無法算持有天數，記 None 而不是誤報 0 天
+            has_close = h.mts_close > 0 and h.mts_close >= h.mts_opening
+            held_days = round((h.mts_close - h.mts_opening) / 86_400_000, 2) if has_close else None
             self.store.save_learning_event(ts, "credit_closed", self.symbol,
                                            offer_id=h.id, amount=h.amount,
                                            rate=h.rate, apy=_apy(h.rate),
                                            period=h.period,
-                                           detail={"held_days": round(held_days, 2),
-                                                   "matured": held_days >= h.period * 0.98,
+                                           detail={"held_days": held_days,
+                                                   "matured": (held_days is not None
+                                                               and held_days >= h.period * 0.98),
                                                    "backfill": True})
 
     def _market_and_shadow(self, shadow_capital: float, now_mts: int):
