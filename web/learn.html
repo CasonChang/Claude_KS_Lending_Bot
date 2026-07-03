@@ -24,6 +24,9 @@
   .rv-body blockquote { border-left: 3px solid #4fc3f7; margin: 8px 0; padding: 4px 12px; color: #8b98a9; }
   .rv-body code { background: #1c2430; padding: 1px 5px; border-radius: 4px; }
   .rv-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  /* 流水表：資料多，放進固定高度捲動框，表頭黏頂 */
+  .flow-scroll { max-height: 460px; overflow: auto; }
+  .flow-scroll thead th { position: sticky; top: 0; background: var(--panel); z-index: 1; }
 </style>
 </head>
 <body>
@@ -146,12 +149,12 @@
 
     <div class="grid2">
       <div class="chart-box">
-        <h3><span class="acct-main">主帳戶</span> 動作紀錄（fUSD，最近 60 筆）</h3>
-        <table id="actionsMain"><thead><tr><th>時間</th><th>動作</th><th>金額</th><th>年化</th><th>天期</th></tr></thead><tbody></tbody></table>
+        <h3><span class="acct-main">主帳戶</span> 動作紀錄（fUSD，最近，可捲動）</h3>
+        <div class="flow-scroll"><table id="actionsMain"><thead><tr><th>時間</th><th>動作</th><th>金額</th><th>年化</th><th>天期</th></tr></thead><tbody></tbody></table></div>
       </div>
       <div class="chart-box">
-        <h3><span class="acct-sub">子帳戶</span> 事件流水（最近 60 筆）<span class="muted small">同輪「撤單＋新掛」＝調單</span></h3>
-        <table id="eventsSub"><thead><tr><th>時間</th><th>事件</th><th>金額</th><th>年化</th><th>天期</th></tr></thead><tbody></tbody></table>
+        <h3><span class="acct-sub">子帳戶</span> 事件流水（最近，可捲動）<span class="muted small">同輪「撤單＋新掛」＝調單</span></h3>
+        <div class="flow-scroll"><table id="eventsSub"><thead><tr><th>時間</th><th>事件</th><th>金額</th><th>年化</th><th>天期</th></tr></thead><tbody></tbody></table></div>
       </div>
     </div>
 
@@ -166,6 +169,6 @@
 <footer class="muted small">學習期專用頁（無主頁連結）。子帳戶僅唯讀側錄，我們無法對其下單。</footer>
 
 <script src="config.js"></script>
-<script src="learn.js?v=20260702c"></script>
+<script src="learn.js?v=20260702d"></script>
 </body>
 </html>

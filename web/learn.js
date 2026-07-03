@@ -426,7 +426,8 @@ const actionRowHtml = (a) => {
 
 function renderMainActions(actions) {
   const rows = actions.filter((a) => (a.detail || {}).symbol === SYM);
-  setSortable("actionsMain", rows, actionRowHtml, { limit: 60, emptyMsg: "還沒有紀錄" });
+  // 顯示 RPC 回傳的全部（已上限 300 筆）；表格在自己的框內捲動，合計不受影響
+  setSortable("actionsMain", rows, actionRowHtml, { emptyMsg: "還沒有紀錄" });
 }
 
 const EVENT_LABEL = {
@@ -446,7 +447,8 @@ const eventRowHtml = (e) => {
 };
 
 function renderSubEvents(events) {
-  setSortable("eventsSub", events || [], eventRowHtml, { limit: 60, emptyMsg: "還沒有事件（觀察者啟動後，掛單有變動才會記）" });
+  // 顯示 RPC 回傳的全部（已上限 400 筆）；表格在自己的捲動框內，不撐長頁面
+  setSortable("eventsSub", events || [], eventRowHtml, { emptyMsg: "還沒有事件（觀察者啟動後，掛單有變動才會記）" });
 }
 
 // 一次性掛上各表的可排序表頭（DOM 已就緒；資料由 renderAll 灌入）
