@@ -92,6 +92,19 @@ class ClosedCredit:
 
 
 @dataclass
+class HistOffer:
+    """已結束的掛單（成交/撤銷）歷史——用來補捉輪詢盲區內掛出又秒成交/秒撤的單。"""
+    id: int
+    symbol: str
+    mts_created: int
+    mts_updated: int      # 成交或撤銷的時間
+    amount: float         # 原始掛單金額（AMOUNT_ORIG）
+    rate: float
+    period: int
+    status: str           # 例："EXECUTED @ ...", "CANCELED", "PARTIALLY FILLED @ ..."
+
+
+@dataclass
 class LedgerEntry:
     """帳本紀錄（category 28 = 放貸利息收入）。"""
     id: int
@@ -213,6 +226,26 @@ class BfxClient:
                              rate=float(c[11]), period=int(c[12]),
                              mts_opening=int(c[13] or c[3]), mts_close=int(c[4] or 0))
                 for c in d]
+
+    def funding_offers_history(self, symbol: str, limit: int = 500,
+                               start_mts: int | None = None) -> list[HistOffer]:
+        """已結束掛單歷史（成交/撤銷）。補捉輪詢盲區：掛出又秒成交/秒撤的單也查得到。
+
+        陣列格式同 active offers 再多狀態欄：
+        [ID,SYMBOL,MTS_CREATED,MTS_UPDATED,AMOUNT,AMOUNT_ORIG,TYPE,_,_,FLAGS,
+         STATUS,_,_,_,RATE,PERIOD,...]"""
+        body: dict = {"limit": limit}
+        if start_mts:
+            body["start"] = start_mts
+        d = self._post_auth(f"auth/r/funding/offers/{symbol}/hist", body)
+        out = []
+        for o in d:
+            amt = o[5] if len(o) > 5 and o[5] is not None else o[4]
+            out.append(HistOffer(id=int(o[0]), symbol=o[1], mts_created=int(o[2]),
+                                 mts_updated=int(o[3] or o[2]), amount=abs(float(amt or 0)),
+                                 rate=float(o[14]), period=int(o[15]),
+                                 status=str(o[10] or "")))
+        return out
 
     def submit_offer(self, symbol: str, amount: float, rate: float, period: int) -> dict:
         body = {"type": "LIMIT", "symbol": symbol,

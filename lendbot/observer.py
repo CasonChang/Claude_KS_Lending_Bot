@@ -52,6 +52,18 @@ def _apy(rate: float) -> float:
     return round(daily_to_apy(rate) * 100, 2)
 
 
+def offer_status_event(status: str) -> str | None:
+    """把掛單歷史的狀態字串對到事件類型（純函式，方便測試）。"""
+    s = (status or "").upper()
+    if s.startswith("EXECUTED"):
+        return "offer_filled"
+    if s.startswith("PARTIALLY"):
+        return "offer_partial_fill"
+    if s.startswith("CANCEL"):        # CANCELED / CANCELLED
+        return "offer_canceled"
+    return None
+
+
 def diff_events(prev_offers: dict[int, Offer], cur_offers: dict[int, Offer],
                 prev_credits: dict[int, Credit], cur_credits: dict[int, Credit],
                 now_mts: int) -> list[dict]:
@@ -98,16 +110,9 @@ def diff_events(prev_offers: dict[int, Offer], cur_offers: dict[int, Offer],
                            "period": cur_o.period,
                            "detail": {"from": prev_o.amount, "to": cur_o.amount}})
 
-    # 放貸：新增（成交）。已由上面 offer_filled 記到的成交（matched）不再重複記，
-    # 同一筆成交只留一則事件。credit_new 只剩「沒對應到消失掛單」的情況——
-    # 也就是掛單在兩次輪詢之間「掛出又秒成交」、我們沒捕捉到 offer 的快速成交。
-    for cid in sorted(cur_credits.keys() - prev_credits.keys()):
-        if cid in matched:
-            continue
-        c = cur_credits[cid]
-        events.append({"event": "credit_new", "offer_id": c.id, "amount": c.amount,
-                       "rate": c.rate, "apy": _apy(c.rate), "period": c.period,
-                       "detail": {"fast_fill": True}})
+    # 放貸「開始」不另記 credit_new：一筆放貸就是「掛單成交」，已由上面 offer_filled
+    # （看得到掛單時）或掛單歷史補捉（掛出又秒成交、沒看到掛單時）記錄，避免同一筆成交
+    # 記兩次。active_credits 的即時清單另存在 learning_status，不靠事件。
 
     # 放貸：消失（還款/到期）
     for cid in sorted(prev_credits.keys() - cur_credits.keys()):
@@ -138,31 +143,41 @@ class LearningObserver:
         self.first_poll = True
         self.processed_closed: set[int] = set()
         self.first_hist_sync = True
+        self.seen_offers: set[int] = set()      # 已記錄過的掛單 id（delta＋掛單歷史共用去重）
+        self.offers_baseline_done = False       # 首次啟動先建基準、不回補既有歷史
         self.last_snapshot = 0.0
         self.last_earnings_sync = 0.0
         self.errors_in_row = 0
 
     # ── 主迴圈 ──────────────────────────────────────────────
 
-    def _seed_processed_closed(self):
-        """從 DB 載入近 3 天已記錄過的結束單 id，避免重啟（Zeabur redeploy）後
-        in-memory 去重集合被清空、backfill 把同一筆結束重複記進 learning_events。"""
+    def _seed_from_db(self):
+        """從 DB 載入近 3 天已記錄的結束單 id 與掛單 id，避免重啟（Zeabur redeploy）後
+        in-memory 去重集合被清空、把同一筆結束/掛單重複記進 learning_events。"""
         cut = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
-        rows = self.store.select("learning_events", {
+        closed = self.store.select("learning_events", {
             "select": "offer_id", "event": "eq.credit_closed",
-            "ts": f"gte.{cut}", "limit": "10000"})
-        ids = {r["offer_id"] for r in rows if r.get("offer_id") is not None}
-        self.processed_closed.update(ids)
-        if ids:
-            log.info("學習觀察者：從 DB 載入 %d 筆已記錄結束單（防重複）", len(ids))
+            "ts": f"gte.{cut}", "limit": "20000"})
+        self.processed_closed.update(r["offer_id"] for r in closed if r.get("offer_id") is not None)
+        offs = self.store.select("learning_events", {
+            "select": "offer_id",
+            "event": "in.(offer_new,offer_filled,offer_canceled,offer_partial_fill)",
+            "ts": f"gte.{cut}", "limit": "50000"})
+        self.seen_offers.update(r["offer_id"] for r in offs if r.get("offer_id") is not None)
+        if self.seen_offers:
+            # 有歷史紀錄＝重啟：不需建基準，直接回補停機期間錯過的掛單
+            self.offers_baseline_done = True
+        if self.processed_closed or self.seen_offers:
+            log.info("學習觀察者：DB 載入 %d 結束單、%d 掛單 id（防重複）",
+                     len(self.processed_closed), len(self.seen_offers))
 
     def run_forever(self):
         log.info("學習觀察者啟動（唯讀）：%s｜輪詢 %ds｜快照 %d 分",
                  self.symbol, self.poll_seconds, self.snapshot_seconds // 60)
         try:
-            self._seed_processed_closed()
+            self._seed_from_db()
         except Exception:
-            log.exception("學習觀察者：載入已記錄結束單失敗（不影響後續）")
+            log.exception("學習觀察者：從 DB 載入去重集合失敗（不影響後續）")
         while True:
             try:
                 self.poll_once()
@@ -192,15 +207,21 @@ class LearningObserver:
                                   self.prev_credits, cur_credits, now_mts):
                 if ev["event"] == "credit_closed":
                     self.processed_closed.add(ev["offer_id"])
+                elif ev["offer_id"] is not None:   # offer_new/filled/canceled/partial
+                    self.seen_offers.add(ev["offer_id"])
                 self.store.save_learning_event(ts, ev["event"], self.symbol,
                                                offer_id=ev["offer_id"],
                                                amount=ev["amount"], rate=ev["rate"],
                                                apy=ev["apy"], period=ev["period"],
                                                detail=ev["detail"])
+        # 目前還活著的掛單也標記為已見（它們終將進歷史，屆時別再補記一次）
+        self.seen_offers.update(cur_offers.keys())
         self.prev_offers, self.prev_credits = cur_offers, cur_credits
         self.first_poll = False
 
-        # 盲區回補：兩輪之間成交又秒還的單，用結束歷史撈回來
+        # 一筆不漏：用掛單歷史補捉兩輪之間「掛出又秒成交/秒撤」、delta 完全沒看到的掛單
+        self._reconcile_offers_history()
+        # 盲區回補：兩輪之間成交又秒還的放貸，用結束歷史撈回來
         self._reconcile_closed_history(ts)
 
         # 快照（含市場 view + 影子決策）或輕量現況更新
@@ -221,6 +242,43 @@ class LearningObserver:
             self._sync_earnings()
 
     # ── 各步驟 ──────────────────────────────────────────────
+
+    def _reconcile_offers_history(self):
+        """一筆不漏：用掛單歷史（已成交/已撤銷）補捉 delta 完全沒看到的掛單——
+        掛出又在兩次輪詢間秒成交/秒撤的單（spike 時對方可能狂重掛）。
+
+        只處理 seen_offers 沒有的 id（delta 已捕捉的由 delta 記終局、不重複）。
+        事件時間戳用掛單本身的建立/更新時間，歸屬到正確的 UTC 日。"""
+        try:
+            hist = self.client.funding_offers_history(self.symbol, limit=500)
+        except BfxError as e:
+            log.warning("子帳戶掛單歷史查詢失敗: %s", e)
+            return
+        if not self.offers_baseline_done:   # 首次啟動：建基準、不回補既有歷史（避免灌爆學習前的單）
+            self.seen_offers.update(h.id for h in hist)
+            self.offers_baseline_done = True
+            return
+        new = 0
+        for h in sorted(hist, key=lambda x: x.mts_created):   # 由舊到新，事件順序才對
+            if h.id in self.seen_offers:
+                continue
+            self.seen_offers.add(h.id)
+            created = datetime.fromtimestamp(h.mts_created / 1000, timezone.utc).isoformat()
+            updated = datetime.fromtimestamp(h.mts_updated / 1000, timezone.utc).isoformat()
+            # 補記「掛單」（用建立時間）＋終局事件（用更新時間）
+            self.store.save_learning_event(created, "offer_new", self.symbol,
+                                           offer_id=h.id, amount=h.amount, rate=h.rate,
+                                           apy=_apy(h.rate), period=h.period,
+                                           detail={"missed": True})
+            term = offer_status_event(h.status)
+            if term:
+                self.store.save_learning_event(updated, term, self.symbol,
+                                               offer_id=h.id, amount=h.amount, rate=h.rate,
+                                               apy=_apy(h.rate), period=h.period,
+                                               detail={"from_history": True, "status": h.status})
+            new += 1
+        if new:
+            log.info("學習觀察者：掛單歷史補捉 %d 筆盲區掛單", new)
 
     def _reconcile_closed_history(self, ts: str):
         try:

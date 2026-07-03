@@ -1,6 +1,6 @@
 """學習觀察者的差異偵測（diff_events 純函式）測試。"""
 from lendbot.bfx_client import Credit, Offer
-from lendbot.observer import diff_events
+from lendbot.observer import diff_events, offer_status_event
 
 NOW = 1_700_000_000_000
 
@@ -50,18 +50,25 @@ def test_offer_gone_with_matching_credit_is_fill():
     assert len(fills) == 1
     assert fills[0]["detail"] == {"credit_id": 99}
     assert not by_event(events, "offer_canceled")
-    # 同一筆成交只記一則：已由 offer_filled 記到，不再重複記 credit_new
+    # 一筆成交只記一則（offer_filled）；不再另記 credit_new
     assert not by_event(events, "credit_new")
 
 
-def test_new_credit_without_seen_offer_is_fast_fill():
-    # 掛單在兩次輪詢間掛出又秒成交、沒捕捉到 offer → 只會有 credit_new（標記 fast_fill）
+def test_new_credit_without_seen_offer_yields_no_event():
+    # 掛單在兩次輪詢間掛出又秒成交、沒捕捉到 offer → diff 不記任何事件，
+    # 改由掛單歷史（_reconcile_offers_history）補捉 offer_new＋offer_filled
     c = credit(99, amount=500, rate=0.0004, period=2, opened=NOW)
     events = diff_events({}, {}, {}, {99: c}, NOW)
-    news = by_event(events, "credit_new")
-    assert len(news) == 1
-    assert news[0]["detail"] == {"fast_fill": True}
-    assert not by_event(events, "offer_filled")
+    assert events == []
+
+
+def test_offer_status_event_mapping():
+    assert offer_status_event("EXECUTED @ 0.00038(500.0)") == "offer_filled"
+    assert offer_status_event("PARTIALLY FILLED @ 0.00038(200.0)") == "offer_partial_fill"
+    assert offer_status_event("CANCELED") == "offer_canceled"
+    assert offer_status_event("CANCELLED was: ...") == "offer_canceled"
+    assert offer_status_event("ACTIVE") is None
+    assert offer_status_event("") is None
 
 
 def test_offer_gone_with_different_rate_credit_is_cancel():

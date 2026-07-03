@@ -433,20 +433,24 @@ function renderMainActions(actions) {
 const EVENT_LABEL = {
   offer_new: ["掛單", "ev-open"], offer_canceled: ["撤單", "ev-cancel"],
   offer_filled: ["成交", "ev-fill"], offer_partial_fill: ["部分成交", "ev-fill"],
-  // 掛單在兩次輪詢間「掛出又秒成交」、沒捕捉到掛單那一拍的成交
-  credit_new: ["成交（未及捕捉掛單）", "ev-fill"], credit_closed: ["放貸結束", "ev-close"],
+  // credit_new 已停用（成交統一記 offer_filled）；保留對映以相容歷史資料
+  credit_new: ["成交", "ev-fill"], credit_closed: ["放貸結束", "ev-close"],
 };
 
 const eventRowHtml = (e) => {
   const [label, cls] = EVENT_LABEL[e.event] || [e.event, ""];
+  const d = e.detail || {};
   let extra = "";
-  if (e.event === "credit_closed" && e.detail) {
-    const h = e.detail.held_days;
-    extra = e.detail.matured ? "・放滿"
+  if (e.event === "credit_closed") {
+    const h = d.held_days;
+    extra = d.matured ? "・放滿"
       : h == null ? "・提前還款"
       : `・持有 ${h < 0.01 ? "<0.01" : h} 天`;
+  } else if (d.missed || d.from_history) {
+    extra = " ⚡";  // 掛單歷史補捉到的秒級掛撤（delta 沒抓到那一拍）
   }
-  return `<tr><td>${fmtDate(e.ts)}</td><td class="${cls}">${label}${extra}</td>` +
+  const tip = (d.missed || d.from_history) ? ' title="掛單歷史補捉（兩次輪詢間的秒級掛撤）"' : "";
+  return `<tr${tip}><td>${fmtDate(e.ts)}</td><td class="${cls}">${label}${extra}</td>` +
     `<td>${money(e.amount)}</td><td>${e.apy != null ? pct(e.apy) : "—"}</td><td>${e.period ?? "—"} 天</td></tr>`;
 };
 
