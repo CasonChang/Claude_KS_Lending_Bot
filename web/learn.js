@@ -235,25 +235,64 @@ function dailyApy(e, feeFactor) {
   return +(e.amount / (e.balance - e.amount) * 365 * 100 * feeFactor).toFixed(2);
 }
 
+const shiftDate = (dstr, days) => {
+  const t = new Date(dstr + "T00:00:00Z");
+  t.setUTCDate(t.getUTCDate() + days);
+  return t.toISOString().slice(0, 10);
+};
+
 function renderApyCompare(d) {
-  const feeFactor = apyFeeMode === "gross" ? 1 / NET : 1;
+  // X 軸＝「賺取日」（利息實際產生的那天）。
+  // 現金入帳列日期是結算日（賺取日+1）→ 往前平移一天對齊；
+  // 應計＝當日平均持倉×加權利率（快照推算，不受入帳時點影響）→ 直接是賺取日。
+  const feeFactor = apyFeeMode === "gross" ? 1 / NET : 1;       // 現金列是稅後值
+  const accFactor = apyFeeMode === "gross" ? 1 : NET;            // 應計 gross 是稅前值
   const m = seriesByDate(d.main_earnings), s = seriesByDate(d.learning_earnings);
-  const dates = [...new Set([...Object.keys(m), ...Object.keys(s)])].sort().slice(-30);
+  const mAcc = {}, sAcc = {};
+  for (const a of d.main_accrual || []) mAcc[a.day] = a;
+  for (const a of d.learning_accrual || []) sAcc[a.day] = a;
+
+  const earnedDays = new Set([
+    ...Object.keys(m).map((x) => shiftDate(x, -1)),
+    ...Object.keys(s).map((x) => shiftDate(x, -1)),
+    ...Object.keys(mAcc), ...Object.keys(sAcc),
+  ]);
+  const dates = [...earnedDays].sort().slice(-30);
+
+  const mainStatus = (d.statuses || []).find((x) => x.symbol === SYM) || {};
+  const mainWalletNow = typeof mainStatus.wallet_balance === "number" ? mainStatus.wallet_balance : null;
+
+  const accApy = (row, wallet) => {
+    if (!row || !wallet) return null;
+    return +(row.gross * 365 * 100 * accFactor / wallet).toFixed(2);
+  };
+  const cashLine = (map) => dates.map((x) => dailyApy(map[shiftDate(x, 1)], feeFactor));
+  const mainAccLine = dates.map((x) => {
+    const wallet = m[shiftDate(x, 1)]?.balance ?? mainWalletNow;
+    return accApy(mAcc[x], wallet);
+  });
+  const subAccLine = dates.map((x) => accApy(sAcc[x], sAcc[x]?.avg_wallet));
+
   apyChart?.destroy();
   apyChart = new Chart($("apyCompareChart"), {
     type: "line",
     data: {
       labels: dates.map((x) => x.slice(5)),
       datasets: [
-        { label: "主帳戶", data: dates.map((x) => dailyApy(m[x], feeFactor)),
+        { label: "主・現金", data: cashLine(m),
           borderColor: chartColors.main, pointRadius: 2, borderWidth: 2, tension: 0.2, spanGaps: true },
-        { label: "子帳戶", data: dates.map((x) => dailyApy(s[x], feeFactor)),
+        { label: "子・現金", data: cashLine(s),
           borderColor: chartColors.sub, pointRadius: 2, borderWidth: 2, tension: 0.2, spanGaps: true },
+        { label: "主・應計", data: mainAccLine, borderDash: [6, 4],
+          borderColor: chartColors.main + "99", pointRadius: 0, borderWidth: 1.5, tension: 0.2, spanGaps: true },
+        { label: "子・應計", data: subAccLine, borderDash: [6, 4],
+          borderColor: chartColors.sub + "99", pointRadius: 0, borderWidth: 1.5, tension: 0.2, spanGaps: true },
       ],
     },
     options: {
       interaction: { mode: "index", intersect: false },
-      plugins: { legend: { display: true } },
+      plugins: { legend: { display: true },
+        tooltip: { callbacks: { label: (c) => `${c.dataset.label}：${c.parsed.y?.toFixed(2)}%` } } },
       scales: { y: { ticks: { callback: (v) => v.toFixed(1) + "%" } } },
     },
   });
