@@ -201,6 +201,12 @@ class LearningObserver:
         # 誤判成「放貸結束」。兩桶聯集才是完整的放貸中。
         loans = self.client.active_loans(self.symbol)
         wallet_total, available = self.client.funding_wallet(self.currency)
+        # 目前 FRR（浮動）日利率——FRR 掛單/放貸的 rate 欄是 0，要用當下 FRR 才算得出年化，
+        # 否則會顯示 0% 並把加權年化拖低（公開端點、免 auth）。
+        try:
+            frr = self.client.funding_ticker(self.symbol).frr
+        except BfxError:
+            frr = 0.0
 
         used_ids = {c.id for c in credits}
         merged = {c.id: c for c in credits}
@@ -245,7 +251,7 @@ class LearningObserver:
             market, shadow = self._market_and_shadow(available + offers_total, now_mts)
         self._write_status(ts, offers, credits, wallet_total, available,
                            market, shadow,
-                           snapshot=market is not None, used_ids=used_ids)
+                           snapshot=market is not None, used_ids=used_ids, frr=frr)
 
         # 每日利息（每小時同步一次就夠：利息一天只入帳一次）
         if time.time() - self.last_earnings_sync > 3600:
@@ -275,17 +281,19 @@ class LearningObserver:
             self.seen_offers.add(h.id)
             created = datetime.fromtimestamp(h.mts_created / 1000, timezone.utc).isoformat()
             updated = datetime.fromtimestamp(h.mts_updated / 1000, timezone.utc).isoformat()
+            is_frr = not (h.rate and h.rate > 0)  # FRR 浮動單 rate 欄為 0
             # 補記「掛單」（用建立時間）＋終局事件（用更新時間）
             self.store.save_learning_event(created, "offer_new", self.symbol,
                                            offer_id=h.id, amount=h.amount, rate=h.rate,
                                            apy=_apy(h.rate), period=h.period,
-                                           detail={"missed": True})
+                                           detail={"missed": True, "frr": is_frr})
             term = offer_status_event(h.status)
             if term:
                 self.store.save_learning_event(updated, term, self.symbol,
                                                offer_id=h.id, amount=h.amount, rate=h.rate,
                                                apy=_apy(h.rate), period=h.period,
-                                               detail={"from_history": True, "status": h.status})
+                                               detail={"from_history": True, "status": h.status,
+                                                       "frr": is_frr})
             new += 1
         if new:
             log.info("學習觀察者：掛單歷史補捉 %d 筆盲區掛單", new)
@@ -350,9 +358,11 @@ class LearningObserver:
     def _write_status(self, ts: str, offers: list[Offer], credits: list[Credit],
                       wallet_total: float, available: float,
                       market: dict | None, shadow: list | None, snapshot: bool,
-                      used_ids: set[int] | None = None):
+                      used_ids: set[int] | None = None, frr: float = 0.0):
+        # FRR（浮動）掛單/放貸的 rate 欄是 0，用當下 FRR 當有效利率算年化，並標 frr 旗標。
+        eff = lambda r: r if (r and r > 0) else frr
         total = sum(c.amount for c in credits)
-        wrate = (sum(c.amount * c.rate for c in credits) / total) if total else 0.0
+        wrate = (sum(c.amount * eff(c.rate) for c in credits) / total) if total else 0.0
         row = {
             "ts": ts,
             "wallet_total": round(wallet_total, 2),
@@ -362,14 +372,15 @@ class LearningObserver:
             "offers_count": len(offers),
             "weighted_apy": round(daily_to_apy(wrate) * 100, 2) if wrate else 0,
             "offers": [{
-                "id": o.id, "amount": o.amount, "rate": o.rate,
-                "apy": _apy(o.rate), "period": o.period,
+                "id": o.id, "amount": o.amount, "rate": eff(o.rate),
+                "apy": _apy(eff(o.rate)), "period": o.period, "frr": not (o.rate and o.rate > 0),
                 "created": datetime.fromtimestamp(o.mts_created / 1000,
                                                   timezone.utc).isoformat(),
-            } for o in sorted(offers, key=lambda x: x.rate)],
+            } for o in sorted(offers, key=lambda x: eff(x.rate))],
             "credits": [{
-                "id": c.id, "amount": c.amount, "rate": c.rate,
-                "apy": _apy(c.rate), "period": c.period,
+                "id": c.id, "amount": c.amount, "rate": eff(c.rate),
+                "apy": _apy(eff(c.rate)), "period": c.period,
+                "frr": not (c.rate and c.rate > 0),
                 "opened": datetime.fromtimestamp(c.mts_opening / 1000,
                                                  timezone.utc).isoformat(),
                 # used=正用於借款人倉位（credits 桶）；False＝loans 桶（已取走未用，照樣計息）

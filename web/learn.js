@@ -14,7 +14,10 @@ const CUR = "USD";
 
 const FUNDING_FEE = 0.15;                  // Bitfinex 放貸利息抽 15%
 const NET = 1 - FUNDING_FEE;
-const dailyToApy = (r) => (Math.pow(1 + r, 365) - 1) * 100;
+// 本頁一律「單利年化」＝日利率 × 365（與 Bitfinex／外部服務顯示一致，較直覺）。
+const aprFromRate = (r) => (r || 0) * 365 * 100;                 // 日利率 → 單利年化%
+// 後端存的是複利 apy（%），轉回單利：先還原日利率再 ×365
+const aprFromApy = (apy) => ((Math.pow(1 + (apy || 0) / 100, 1 / 365) - 1) * 365 * 100);
 const pct = (v) => (v ?? 0).toFixed(2) + "%";
 const money = (v) => "$" + (v || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
 
@@ -105,7 +108,7 @@ function sideMetrics(status, earnings) {
     available: s.available || 0,
     offersCount: s.offers_count ?? offers.length, offersAmt,
     creditsCount: s.credits_count ?? s.lent_count ?? credits.length,
-    wApyGross: wApy, wApyNet: wApy * NET, avgPeriod,
+    wApyGross: aprFromApy(wApy), wApyNet: aprFromApy(wApy) * NET, avgPeriod,
     earnToday: rows.filter((e) => e.date === today).reduce((a, e) => a + e.amount, 0),
     earn7: sumSince(7),
     // 累計收益（自起跑）：RPC 已把 earnings 過濾到起跑日之後，這裡直接全加
@@ -329,7 +332,7 @@ function renderSubTrend(snaps) {
   subApyTrendChart = new Chart($("subApyTrendChart"), {
     type: "line",
     data: { datasets: [
-      { label: "子帳戶加權年化", data: pts.map((s) => ({ x: new Date(s.ts).getTime(), y: s.weighted_apy })),
+      { label: "子帳戶加權年化", data: pts.map((s) => ({ x: new Date(s.ts).getTime(), y: aprFromApy(s.weighted_apy) })),
         borderColor: chartColors.sub, pointRadius: 0, borderWidth: 1.5, tension: 0.2 },
     ]},
     options: {
@@ -405,11 +408,15 @@ function drawSortable(id) {
 
 // ── 掛單 / 影子 / 放貸中 / 事件 ──
 
-const offerApy = (o) => o.apy ?? dailyToApy(o.rate);
-const creditApy = (c) => c.apy ?? dailyToApy(c.rate);
+// 單利年化（%）：優先用後端存的複利 apy 轉單利，否則用原始日利率 ×365
+const offerApy = (o) => (o.apy != null ? aprFromApy(o.apy) : aprFromRate(o.rate));
+const creditApy = (c) => (c.apy != null ? aprFromApy(c.apy) : aprFromRate(c.rate));
+// FRR 浮動部位顯示「FRR ~X%」，固定利率直接顯示 %
+const apyCell = (rec, apr) => rec && rec.frr
+  ? `<span title="FRR 浮動利率（每日跟隨市場）">FRR ~${apr.toFixed(2)}%</span>` : pct(apr);
 
 const offerRowHtml = (withAge) => (o) =>
-  `<tr><td>${money(o.amount)}</td><td>${pct(offerApy(o))}</td><td>${o.period} 天</td>` +
+  `<tr><td>${money(o.amount)}</td><td>${apyCell(o, offerApy(o))}</td><td>${o.period} 天</td>` +
   (withAge ? `<td>${o.created ? fmtAge(o.created) : "—"}</td>` : "") + `</tr>`;
 const offerTotal = (withAge) => (all) => {
   const tAmt = all.reduce((a, o) => a + (o.amount || 0), 0);
@@ -428,13 +435,14 @@ function renderShadow(subStatus) {
   setSortable("shadowActual", actual, offerRowHtml(false), { totalFn: offerTotal(false), emptyMsg: "快照當下子帳戶沒有掛單" });
   setSortable("shadowOurs", shadow, offerRowHtml(false), { totalFn: offerTotal(false),
     emptyMsg: "快照當下子帳戶資金已全部放貸出去（無可重配置資金）→ 我們也無單可掛" });
+  const a = aprFromApy;  // 市場欄後端存複利 apy，顯示轉單利
   $("shadowMarket").textContent = mkt.anchor_apy != null
-    ? `快照 ${mkt.snap_ts ? fmtAge(mkt.snap_ts) + "前" : "—"}｜市場：錨點 ${pct(mkt.anchor_apy)}・IQM ${pct(mkt.iqm_apy)}・FRR ${pct(mkt.frr_apy)}・隊首 ${pct(mkt.best_ask_apy)}・保底 ${pct(mkt.floor_apy)}${mkt.spike ? "・🔥SPIKE" : ""}`
+    ? `快照 ${mkt.snap_ts ? fmtAge(mkt.snap_ts) + "前" : "—"}｜市場：錨點 ${pct(a(mkt.anchor_apy))}・IQM ${pct(a(mkt.iqm_apy))}・FRR ${pct(a(mkt.frr_apy))}・隊首 ${pct(a(mkt.best_ask_apy))}・保底 ${pct(a(mkt.floor_apy))}${mkt.spike ? "・🔥SPIKE" : ""}`
     : "（還沒有快照）";
 }
 
 const creditRowHtml = (c) =>
-  `<tr><td>${money(c.amount)}</td><td>${pct(creditApy(c))}</td><td>${c.period} 天</td>` +
+  `<tr><td>${money(c.amount)}</td><td>${apyCell(c, creditApy(c))}</td><td>${c.period} 天</td>` +
   `<td>${c.opened ? fmtDate(c.opened) : "—"}</td></tr>`;
 function creditTotal(all, shownCount) {
   const tAmt = all.reduce((a, c) => a + (c.amount || 0), 0);
@@ -453,7 +461,7 @@ const ACTION_LABEL = {
   "cancel": ["撤單", "ev-cancel"], "fill": ["成交", "ev-fill"],
   "closed_early": ["提前還款", "ev-close"], "closed_matured": ["到期還款", "ev-close"],
 };
-const actionApy = (a) => { const d = a.detail || {}; return d.apy ?? (d.rate != null ? dailyToApy(d.rate) : null); };
+const actionApy = (a) => { const d = a.detail || {}; return d.apy != null ? aprFromApy(d.apy) : (d.rate != null ? aprFromRate(d.rate) : null); };
 
 const actionRowHtml = (a) => {
   const d = a.detail || {};
@@ -489,8 +497,9 @@ const eventRowHtml = (e) => {
     extra = " ⚡";  // 掛單歷史補捉到的秒級掛撤（delta 沒抓到那一拍）
   }
   const tip = (d.missed || d.from_history) ? ' title="掛單歷史補捉（兩次輪詢間的秒級掛撤）"' : "";
+  const apyTxt = d.frr ? "FRR" : (e.apy != null ? pct(aprFromApy(e.apy)) : "—");
   return `<tr${tip}><td>${fmtDate(e.ts)}</td><td class="${cls}">${label}${extra}</td>` +
-    `<td>${money(e.amount)}</td><td>${e.apy != null ? pct(e.apy) : "—"}</td><td>${e.period ?? "—"} 天</td></tr>`;
+    `<td>${money(e.amount)}</td><td>${apyTxt}</td><td>${e.period ?? "—"} 天</td></tr>`;
 };
 
 function renderSubEvents(events) {
@@ -550,8 +559,8 @@ const TZ_SHIFT = -new Date().getTimezoneOffset() * 60;
 const kState = { ws: null, tf: "1h", chanId: null, chart: null, series: null };
 
 function mapCandle(c) {
-  return { time: c[0] / 1000 + TZ_SHIFT, open: dailyToApy(c[1]), close: dailyToApy(c[2]),
-           high: dailyToApy(c[3]), low: dailyToApy(c[4]) };
+  return { time: c[0] / 1000 + TZ_SHIFT, open: aprFromRate(c[1]), close: aprFromRate(c[2]),
+           high: aprFromRate(c[3]), low: aprFromRate(c[4]) };
 }
 
 function initKChart() {
