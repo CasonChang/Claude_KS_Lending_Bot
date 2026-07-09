@@ -196,10 +196,20 @@ class LearningObserver:
 
         offers = self.client.active_offers(self.symbol)
         credits = self.client.active_credits(self.symbol)
+        # loans＝借款人已取走但未用於倉位的部位（FRR 單常駐這裡），也是「放貸中」。
+        # 只看 credits 會漏（07-08 曾整整 $8.5k 隱形）；且 credit↔loan 轉換會被
+        # 誤判成「放貸結束」。兩桶聯集才是完整的放貸中。
+        loans = self.client.active_loans(self.symbol)
         wallet_total, available = self.client.funding_wallet(self.currency)
 
+        used_ids = {c.id for c in credits}
+        merged = {c.id: c for c in credits}
+        for l in loans:
+            merged.setdefault(l.id, l)
+        credits = list(merged.values())
+
         cur_offers = {o.id: o for o in offers}
-        cur_credits = {c.id: c for c in credits}
+        cur_credits = merged
 
         # 差異事件（第一輪只建基準）
         if not self.first_poll:
@@ -235,7 +245,7 @@ class LearningObserver:
             market, shadow = self._market_and_shadow(available + offers_total, now_mts)
         self._write_status(ts, offers, credits, wallet_total, available,
                            market, shadow,
-                           snapshot=market is not None)
+                           snapshot=market is not None, used_ids=used_ids)
 
         # 每日利息（每小時同步一次就夠：利息一天只入帳一次）
         if time.time() - self.last_earnings_sync > 3600:
@@ -339,7 +349,8 @@ class LearningObserver:
 
     def _write_status(self, ts: str, offers: list[Offer], credits: list[Credit],
                       wallet_total: float, available: float,
-                      market: dict | None, shadow: list | None, snapshot: bool):
+                      market: dict | None, shadow: list | None, snapshot: bool,
+                      used_ids: set[int] | None = None):
         total = sum(c.amount for c in credits)
         wrate = (sum(c.amount * c.rate for c in credits) / total) if total else 0.0
         row = {
@@ -361,6 +372,8 @@ class LearningObserver:
                 "apy": _apy(c.rate), "period": c.period,
                 "opened": datetime.fromtimestamp(c.mts_opening / 1000,
                                                  timezone.utc).isoformat(),
+                # used=正用於借款人倉位（credits 桶）；False＝loans 桶（已取走未用，照樣計息）
+                "used": (c.id in used_ids) if used_ids is not None else True,
             } for c in sorted(credits, key=lambda x: -x.amount)],
         }
         if market is not None:

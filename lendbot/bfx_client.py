@@ -219,6 +219,17 @@ class BfxClient:
                        rate=float(c[11]), period=int(c[12]), mts_opening=int(c[13]))
                 for c in d]
 
+    def active_loans(self, symbol: str) -> list[Credit]:
+        """放貸中但「未被借款人用於倉位」的部位（funding loans）。
+
+        Bitfinex 把借出的資金分兩桶：credits＝正用於倉位、loans＝已取走但未用
+        （仍照約計息，FRR 單常駐這裡）。兩桶都算「放貸中」，只看 credits 會漏。
+        陣列前段欄位與 credits 相同，直接重用 Credit。"""
+        d = self._post_auth(f"auth/r/funding/loans/{symbol}")
+        return [Credit(id=int(c[0]), symbol=c[1], amount=float(c[5]),
+                       rate=float(c[11]), period=int(c[12]), mts_opening=int(c[13]))
+                for c in d]
+
     def credits_history(self, symbol: str, limit: int = 25) -> list[ClosedCredit]:
         """已結束的放貸歷史（解掉輪詢盲區：成交後快速歸還的單也查得到）。"""
         d = self._post_auth(f"auth/r/funding/credits/{symbol}/hist", {"limit": limit})
