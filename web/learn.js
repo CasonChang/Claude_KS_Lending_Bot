@@ -497,7 +497,9 @@ const eventRowHtml = (e) => {
     extra = " ⚡";  // 掛單歷史補捉到的秒級掛撤（delta 沒抓到那一拍）
   }
   const tip = (d.missed || d.from_history) ? ' title="掛單歷史補捉（兩次輪詢間的秒級掛撤）"' : "";
-  const apyTxt = d.frr ? "FRR" : (e.apy != null ? pct(aprFromApy(e.apy)) : "—");
+  // FRR 浮動單 rate/apy 皆為 0（沒有固定利率）；新資料有 d.frr、舊資料靠 status 或雙 0 判定
+  const isFrr = d.frr || (d.status && String(d.status).includes("FRR")) || (!e.rate && !e.apy);
+  const apyTxt = isFrr ? "FRR" : (e.apy != null ? pct(aprFromApy(e.apy)) : "—");
   return `<tr${tip}><td>${fmtDate(e.ts)}</td><td class="${cls}">${label}${extra}</td>` +
     `<td>${money(e.amount)}</td><td>${apyTxt}</td><td>${e.period ?? "—"} 天</td></tr>`;
 };
