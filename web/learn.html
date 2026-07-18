@@ -23,7 +23,10 @@
   .rv-body th, .rv-body td { border: 1px solid var(--border); padding: 6px 8px; font-size: .85rem; }
   .rv-body blockquote { border-left: 3px solid #4fc3f7; margin: 8px 0; padding: 4px 12px; color: #8b98a9; }
   .rv-body code { background: #1c2430; padding: 1px 5px; border-radius: 4px; }
-  .rv-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .rv-nav { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+  .rv-nav select { flex: 1 1 auto; min-width: 180px; max-width: 420px; }
+  .rv-nav button { padding: 6px 12px; }
+  .rv-nav button:disabled { opacity: .4; cursor: default; }
   /* 流水表：資料多，放進固定高度捲動框，表頭黏頂 */
   .flow-scroll { max-height: 460px; overflow: auto; }
   .flow-scroll thead th { position: sticky; top: 0; background: var(--panel); z-index: 1; }
@@ -161,7 +164,11 @@
 
     <div class="chart-box">
       <h3>📝 每日學習檢討</h3>
-      <div class="rv-tabs" id="rvTabs"></div>
+      <div class="rv-nav">
+        <button class="ghost" id="rvPrev" title="前一天（更舊）">‹ 前一天</button>
+        <select id="rvSelect" title="選擇日期"></select>
+        <button class="ghost" id="rvNext" title="後一天（更新）">後一天 ›</button>
+      </div>
       <div class="rv-body" id="rvBody"><p class="muted">尚無檢討。每日台北 09:30 後由 agent 產出。</p></div>
     </div>
   </div>
@@ -170,6 +177,6 @@
 <footer class="muted small">學習期專用頁（無主頁連結）。子帳戶僅唯讀側錄，我們無法對其下單。</footer>
 
 <script src="config.js"></script>
-<script src="learn.js?v=20260709a"></script>
+<script src="learn.js?v=20260718a"></script>
 </body>
 </html>

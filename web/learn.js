@@ -534,24 +534,36 @@ function initAllSortables() {
   initSortable("eventsSub", eventCols, { idx: 0, dir: -1 });
 }
 
+// 每日檢討導覽：下拉選單＋前/後一天，日期再多也不撐版面；
+// 記住「正在看的日期」，60 秒自動刷新後不會跳回最新（reviews 依 date desc，idx 0 = 最新）
+let reviewsData = [];
+let rvViewDate = null;
+
 function renderReviews(reviews) {
-  const tabs = $("rvTabs");
-  tabs.innerHTML = "";
-  if (!reviews.length) {
+  reviewsData = (reviews || []).slice().sort((a, b) => b.date.localeCompare(a.date));
+  const sel = $("rvSelect");
+  if (!reviewsData.length) {
+    sel.innerHTML = "";
     $("rvBody").innerHTML = `<p class="muted">尚無檢討。每日台北 09:30 後由 agent 產出（SOP：reviews/learning/README.md）。</p>`;
+    $("rvPrev").disabled = $("rvNext").disabled = true;
     return;
   }
-  reviews.forEach((rv, i) => {
-    const b = document.createElement("button");
-    b.className = "tf" + (i === 0 ? " active" : "");
-    b.textContent = rv.date;
-    b.onclick = () => {
-      [...tabs.children].forEach((c, j) => c.classList.toggle("active", j === i));
-      $("rvBody").innerHTML = marked.parse(rv.body_md || "");
-    };
-    tabs.appendChild(b);
-  });
-  $("rvBody").innerHTML = marked.parse(reviews[0].body_md || "");
+  sel.innerHTML = reviewsData.map((rv, i) => {
+    const t = rv.title ? "　" + rv.title.slice(0, 22) : "";
+    return `<option value="${i}">${rv.date}${t}</option>`;
+  }).join("");
+  let idx = reviewsData.findIndex((rv) => rv.date === rvViewDate);
+  showReview(idx < 0 ? 0 : idx);          // 首次或該日已消失 → 顯示最新
+}
+
+function showReview(i) {
+  if (!reviewsData.length) return;
+  i = Math.max(0, Math.min(i, reviewsData.length - 1));
+  rvViewDate = reviewsData[i].date;
+  $("rvSelect").value = i;
+  $("rvBody").innerHTML = marked.parse(reviewsData[i].body_md || "");
+  $("rvPrev").disabled = i >= reviewsData.length - 1;   // 前一天＝更舊＝idx 更大
+  $("rvNext").disabled = i <= 0;                         // 後一天＝更新＝idx 更小
 }
 
 // ═══════════ fUSD K 棒（公開 WebSocket，REST 沒開 CORS）═══════════
@@ -671,6 +683,11 @@ document.querySelectorAll("#apyFeeToggle .tf").forEach((btn) =>
     apyFeeMode = btn.dataset.fee;
     if (lastData) renderApyCompare(lastData);
   }));
+
+// 每日檢討導覽（一次性掛，資料由 renderReviews 灌入；handler 用 rvViewDate 記住狀態）
+$("rvSelect").addEventListener("change", (e) => showReview(+e.target.value));
+$("rvPrev").addEventListener("click", () => showReview($("rvSelect").selectedIndex + 1));
+$("rvNext").addEventListener("click", () => showReview($("rvSelect").selectedIndex - 1));
 
 initAllSortables();
 initKChart();
