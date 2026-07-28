@@ -21,8 +21,15 @@ Bitfinex P2P 放貸自動化機器人。使用者說**繁體中文**，回覆請
 | 歷史/狀態 DB | `supabase/` | Supabase（PostgREST RPC `dashboard_data`）|
 | 推播 + 指令 | Telegram | bot 由 Zeabur 那份在輪詢 |
 
-策略：IQM 錨點 + 階梯掛單 + spike 追高 + 高利鎖長天期 + 過時自動重掛。
+策略：IQM 錨點 + 階梯掛單 + spike 追高 + 高利鎖長天期 + 過時自動重掛
+＋ **FRR 試點（2026-07-28 起，上限 5%）**。
 參數全在 `config.yaml`（改了要 push + Zeabur redeploy 才生效）。
+
+**FRR 試點**：需求觸發（spike 或近期最高成交 ≥ FRR×0.98）時，把當下可用資金撥一筆掛
+浮動 FRR（`FRRDELTAVAR`, rate=0），曝險上限 5%、24 小時沒成交就撤回。
+背景：FRR 長期比我們 book 高 ~2.3pt，但 FRR 價位很難成交（我們掛 ≥FRR−15% 的單只成交 2%），
+必須長等。設計與實測見 [`research/frr_pilot_design.md`](research/frr_pilot_design.md)。
+**停損：FRR < book 應計 ×1.05 連續 3 天 → `enabled` 改回 false。**
 
 ## 怎麼做變更
 

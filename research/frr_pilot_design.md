@@ -132,7 +132,30 @@ frr_pilot:
 資訊的版本（B 的降價版本質上就是我們現有的頂檔，而頂檔已證實成交率 ~0）。把金額減半可讓
 最壞情況（長期空手）的成本降到 ~$0.15/天，用很小的代價買一次真實驗證。
 
-## 五、一句話（修訂後）
+## 五、✅ 已採用 A 方案並上線（2026-07-28）
+
+使用者選 A（長等版）。實際上線參數（`config.yaml` 的 `strategy.frr_pilot`）：
+
+```yaml
+frr_pilot:
+  enabled: true
+  max_alloc_pct: 0.05      # 曝險上限 5%（掛單中＋放貸中合計）
+  min_offer_usd: 150
+  period_days: 30
+  timeout_minutes: 1440    # 24 小時長等（關鍵：短逾時等於白掛）
+  trigger_spike: true
+  trigger_near_frr: 0.98
+```
+
+實作：`bfx_client.submit_offer(..., offer_type="FRRDELTAVAR")`、`strategy.frr_pilot_plan()`／
+`should_cancel_frr()`／`is_frr_offer()`、`engine._maybe_place_frr()`。
+FRR 單 rate=0 天然不受一般撤單規則影響，走自己的逾時規則。模擬模式不參與。
+
+**回本門檻的好消息**：我們自己的高利單其實都抱得很久——fUSD 13-14% 那幾筆已抱
+**17.6 / 19.7 / 21.4 / 29.5 天**，fUST **22.56%/120 天抱了 31.7 天**。
+子帳戶 FRR 抱 12.5 天也不算異常。→ **「需抱約 9 天回本」的門檻比原先擔心的容易達到。**
+
+## 六、一句話（修訂後）
 
 **觸發不是問題，成交才是——我們的高價單實測只有 2% 成交，45 分逾時等於白做。
 FRR 要成交必須「掛著等數十小時」，而那需要抱滿 ~9 天才回本。

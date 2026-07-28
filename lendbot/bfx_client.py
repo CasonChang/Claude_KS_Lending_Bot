@@ -258,8 +258,11 @@ class BfxClient:
                                  status=str(o[10] or "")))
         return out
 
-    def submit_offer(self, symbol: str, amount: float, rate: float, period: int) -> dict:
-        body = {"type": "LIMIT", "symbol": symbol,
+    def submit_offer(self, symbol: str, amount: float, rate: float, period: int,
+                     offer_type: str = "LIMIT") -> dict:
+        """offer_type：LIMIT＝固定利率；FRRDELTAVAR＝浮動 FRR（rate 當作 offset，0＝純 FRR，
+        成交後仍跟著 FRR 浮動）。"""
+        body = {"type": offer_type, "symbol": symbol,
                 "amount": f"{amount:.6f}", "rate": f"{rate:.8f}", "period": period}
         d = self._post_auth("auth/w/funding/offer/submit", body)
         # 回傳 notification：[MTS, TYPE, MESSAGE_ID, null, OFFER_ARRAY, CODE, STATUS, TEXT]

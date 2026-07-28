@@ -7,8 +7,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lendbot.bfx_client import BookEntry, Credit, FundingTicker, FundingTrade, Offer
 from lendbot.engine import classify_flow, format_closes, format_fills
 from lendbot.strategy import (MarketView, analyze_market, apy_to_daily,
-                              build_ladder, choose_period, daily_to_apy, iqm,
-                              should_cancel)
+                              build_ladder, choose_period, daily_to_apy,
+                              frr_pilot_plan, iqm, is_frr_offer, should_cancel,
+                              should_cancel_frr)
 
 NOW = 1_750_000_000_000  # 假的現在時間（毫秒）
 
@@ -332,3 +333,73 @@ def test_format_closes_multiple_merges():
     assert "合計 600.00 USD" in msg
     assert msg.count("・") == 3
     assert msg.index("300.00") < msg.index("200.00") < msg.index("100.00")
+
+
+# ── FRR 試點 ──
+
+FRR_SCFG = {**SCFG, "frr_pilot": {"enabled": True, "max_alloc_pct": 0.05,
+                                  "min_offer_usd": 150, "period_days": 30,
+                                  "timeout_minutes": 1440, "trigger_spike": True,
+                                  "trigger_near_frr": 0.98}}
+
+
+def test_frr_pilot_no_trigger_returns_none():
+    # 平靜期、近期最高遠低於 FRR → 不觸發
+    v = view_with(anchor=0.0003, spike=False, recent_high=0.0001)
+    assert frr_pilot_plan(1000, 0, 10000, v, FRR_SCFG) is None
+
+
+def test_frr_pilot_triggers_on_spike():
+    v = view_with(anchor=0.0003, spike=True, recent_high=0.0004)
+    plan = frr_pilot_plan(1000, 0, 10000, v, FRR_SCFG)
+    assert plan is not None
+    assert plan.amount == 500.0        # 受 5% 上限限制（10000 × 0.05）
+    assert plan.period == 30
+
+
+def test_frr_pilot_triggers_when_near_frr():
+    # 沒有 spike，但近期最高成交達 FRR × 0.98 → 觸發
+    v = view_with(anchor=0.0003, spike=False, recent_high=0.0003 * 0.99)
+    assert frr_pilot_plan(1000, 0, 10000, v, FRR_SCFG) is not None
+
+
+def test_frr_pilot_respects_exposure_cap():
+    v = view_with(anchor=0.0003, spike=True, recent_high=0.0004)
+    # 已有 400 曝險，上限 500 → 只剩 100，低於 min_offer 150 → 不掛
+    assert frr_pilot_plan(1000, 400, 10000, v, FRR_SCFG) is None
+    # 已有 200 曝險 → 還剩 300 可掛
+    plan = frr_pilot_plan(1000, 200, 10000, v, FRR_SCFG)
+    assert plan is not None and plan.amount == 300.0
+
+
+def test_frr_pilot_limited_by_available():
+    v = view_with(anchor=0.0003, spike=True, recent_high=0.0004)
+    plan = frr_pilot_plan(180, 0, 10000, v, FRR_SCFG)   # 可用只有 180
+    assert plan is not None and plan.amount == 180.0
+
+
+def test_frr_pilot_disabled():
+    v = view_with(anchor=0.0003, spike=True, recent_high=0.0004)
+    assert frr_pilot_plan(1000, 0, 10000, v, SCFG) is None
+
+
+def test_is_frr_offer():
+    assert is_frr_offer(Offer(id=1, symbol="fUSD", mts_created=0, amount=500,
+                              rate=0.0, period=30))
+    assert not is_frr_offer(Offer(id=2, symbol="fUSD", mts_created=0, amount=500,
+                                  rate=0.0003, period=30))
+
+
+def test_should_cancel_frr_timeout():
+    o = Offer(id=1, symbol="fUSD", mts_created=0, amount=500, rate=0.0, period=30)
+    assert not should_cancel_frr(o, FRR_SCFG, 23 * 3600_000)      # 23 小時 → 續等
+    assert should_cancel_frr(o, FRR_SCFG, 24 * 3600_000)          # 滿 24 小時 → 撤
+    never = {**FRR_SCFG, "frr_pilot": {**FRR_SCFG["frr_pilot"], "timeout_minutes": 0}}
+    assert not should_cancel_frr(o, never, 999 * 3600_000)        # 0 = 永不撤
+
+
+def test_frr_offer_immune_to_normal_cancel():
+    """FRR 單 rate=0，不該被一般『相對錨點過高』的撤單規則誤撤。"""
+    o = Offer(id=1, symbol="fUSD", mts_created=0, amount=500, rate=0.0, period=30)
+    v = view_with(anchor=0.0003)
+    assert not should_cancel(o, v, FRR_SCFG, 999 * 3600_000)

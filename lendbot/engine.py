@@ -16,7 +16,8 @@ from .config import Config
 from .logger import get_logger
 from .store import Store
 from .strategy import (MarketView, OfferPlan, analyze_market, apy_to_daily,
-                       build_ladder, daily_to_apy, should_cancel)
+                       build_ladder, daily_to_apy, frr_pilot_plan, is_frr_offer,
+                       should_cancel, should_cancel_frr)
 from .telegram_bot import TelegramBot
 
 log = get_logger("engine")
@@ -269,6 +270,8 @@ class Engine:
                 available = self.client.funding_available(currency)
             elif st.sim is not None:
                 available = st.sim.balance
+            available = self._maybe_place_frr(sym, st, available, view, now_mts, ts,
+                                              offers, credits, wallet_balance)
             self._place_ladder(sym, st, available, view, now_mts, ts)
 
         # 7) 模擬成交（僅模擬模式）/ 建議掛單推播（僅觀察模式）
@@ -380,7 +383,11 @@ class Engine:
                       view: MarketView, now_mts: int, ts: str) -> float:
         freed = 0.0
         for o in offers:
-            if not should_cancel(o, view, self.scfg, now_mts):
+            # FRR 試點單走自己的逾時規則（rate=0 不適用一般的「相對錨點過高」判斷）
+            if is_frr_offer(o):
+                if not should_cancel_frr(o, self.scfg, now_mts):
+                    continue
+            elif not should_cancel(o, view, self.scfg, now_mts):
                 continue
             log.info("%s 撤單 #%s：%.2f @ %s（錨點已降到 %s）",
                      sym, o.id, o.amount, fmt_apy(o.rate), fmt_apy(view.anchor))
@@ -401,6 +408,38 @@ class Engine:
             except BfxError as e:
                 log.warning("%s 撤單失敗 #%s: %s", sym, o.id, e)
         return freed
+
+    def _maybe_place_frr(self, sym: str, st: SymbolState, available: float,
+                         view: MarketView, now_mts: int, ts: str,
+                         offers: list[Offer], credits: list[Credit],
+                         wallet_balance: float | None) -> float:
+        """FRR 試點：需求觸發時，把當下可用資金撥一筆掛浮動 FRR（上限由 max_alloc_pct 控管）。
+        回傳扣掉這筆之後的可用餘額，剩下的照常走階梯。模擬模式不參與（sim 不模擬 FRR）。"""
+        if st.sim is not None or not (self.scfg.get("frr_pilot") or {}).get("enabled"):
+            return available
+        exposure = (sum(o.amount for o in offers if is_frr_offer(o))
+                    + sum(c.amount for c in credits if is_frr_offer(c)))
+        total = wallet_balance or (available + sum(c.amount for c in credits))
+        plan = frr_pilot_plan(available, exposure, total, view, self.scfg)
+        if plan is None:
+            return available
+        detail = {"symbol": sym, "amount": plan.amount, "rate": 0.0,
+                  "period": plan.period, "frr": True}
+        desc = f"{plan.amount:,.2f} @ FRR浮動 / {plan.period}天"
+        if self.dry_run:
+            log.info("[觀察] %s FRR 試點會掛：%s", sym, desc)
+            self.store.log_action("submit(dry)", detail, ts)
+            return available
+        try:
+            self.client.submit_offer(sym, plan.amount, 0.0, plan.period,
+                                     offer_type="FRRDELTAVAR")
+            log.info("%s FRR 試點掛單：%s（曝險 %.2f/%.2f）", sym, desc,
+                     exposure + plan.amount, total * float(self.scfg["frr_pilot"]["max_alloc_pct"]))
+            self.store.log_action("submit", detail, ts)
+            return max(0.0, available - plan.amount)
+        except BfxError as e:
+            log.warning("%s FRR 試點掛單失敗 %s: %s", sym, desc, e)
+            return available
 
     def _place_ladder(self, sym: str, st: SymbolState, available: float,
                       view: MarketView, now_mts: int, ts: str):

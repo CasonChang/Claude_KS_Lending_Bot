@@ -165,6 +165,59 @@ def build_ladder(available: float, view: MarketView, scfg: dict) -> list[OfferPl
     return merged
 
 
+# ── FRR 試點 ──────────────────────────────────────────────
+# 背景：FRR（浮動）長期高於我們階梯的成交利率（14 天實測 FRR 12.8% vs 我們 book 10.5%），
+# 但 FRR 價位的單很難成交（我們掛在 ≥FRR−15% 的 168 筆只成交 3 筆＝2%），
+# 子帳戶的 FRR 單靜置約 45 小時才成交 → 必須「長時間掛著等」，短逾時等於白掛。
+# 因此此試點：只用當下可用（剛回流）的錢、總量設硬上限、需求觸發才掛、逾時很長（預設 24h）。
+
+
+@dataclass(frozen=True)
+class FrrPlan:
+    """FRR 試點掛單（type=FRRDELTAVAR、rate=0 → 純浮動 FRR）。"""
+    amount: float
+    period: int
+
+
+def is_frr_offer(offer) -> bool:
+    """FRR 浮動單/放貸的 rate 欄為 0（Bitfinex 慣例），用來和一般 LIMIT 單分流。
+    Offer 與 Credit 都有 .rate，兩者共用。"""
+    return not (offer.rate and offer.rate > 0)
+
+
+def frr_pilot_plan(available: float, frr_exposure: float, total_capital: float,
+                   view: MarketView, scfg: dict) -> FrrPlan | None:
+    """需求觸發時，把當下可用資金撥一筆去掛浮動 FRR。額度用滿或沒觸發就回 None。
+
+    觸發（任一）：(a) spike 偵測；(b) 近期最高成交 ≥ FRR × trigger_near_frr。
+    實測 14 天：兩者合計約佔 13.6% 時間（日均 ~195 分鐘），每天都有機會觸發。
+    """
+    pcfg = scfg.get("frr_pilot") or {}
+    if not pcfg.get("enabled") or total_capital <= 0:
+        return None
+    near = float(pcfg.get("trigger_near_frr", 0.98))
+    triggered = (bool(pcfg.get("trigger_spike", True)) and view.spike) or (
+        view.frr > 0 and view.recent_high >= view.frr * near)
+    if not triggered:
+        return None
+    room = total_capital * float(pcfg.get("max_alloc_pct", 0.05)) - frr_exposure
+    min_offer = float(pcfg.get("min_offer_usd", scfg.get("min_offer_usd", 150)))
+    amount = min(available, room)
+    if amount < min_offer:
+        return None
+    return FrrPlan(amount=floor2(amount), period=int(pcfg.get("period_days", 30)))
+
+
+def should_cancel_frr(offer: Offer, scfg: dict, now_mts: int) -> bool:
+    """FRR 試點單掛太久仍沒成交 → 撤回還給階梯，避免無限期閒置。
+    timeout_minutes 設 0 = 永不撤（一直等成交）。"""
+    pcfg = scfg.get("frr_pilot") or {}
+    timeout = float(pcfg.get("timeout_minutes", 1440))
+    if timeout <= 0:
+        return False
+    return (now_mts - offer.mts_created) / 60_000 >= timeout
+
+
 # ── 重掛判斷 ──────────────────────────────────────────────
 
 def should_cancel(offer: Offer, view: MarketView, scfg: dict, now_mts: int) -> bool:
