@@ -16,8 +16,8 @@ from .config import Config
 from .logger import get_logger
 from .store import Store
 from .strategy import (MarketView, OfferPlan, analyze_market, apy_to_daily,
-                       build_ladder, daily_to_apy, frr_pilot_plan, is_frr_offer,
-                       should_cancel, should_cancel_frr)
+                       build_ladder, daily_to_apy, effective_rate, frr_pilot_plan,
+                       is_frr_offer, should_cancel, should_cancel_frr)
 from .telegram_bot import TelegramBot
 
 log = get_logger("engine")
@@ -55,19 +55,30 @@ def classify_flow(description: str, amount: float) -> str | None:
     return None
 
 
-def format_fills(sym: str, fills: list) -> str:
-    """把本輪所有新成交整理成一則推播（多筆合併，避免同時間洗版）。"""
+def frr_tag(is_frr: bool) -> str:
+    """FRR 相關事件在推播開頭標明，方便一眼分辨浮動單與一般固定單。"""
+    return "【FRR】" if is_frr else ""
+
+
+def format_fills(sym: str, fills: list, frr: float = 0.0) -> str:
+    """把本輪所有新成交整理成一則推播（多筆合併，避免同時間洗版）。
+    FRR 浮動單的 rate 欄是 0 → 用當下 FRR 顯示年化，並在開頭標【FRR】。"""
     ccy = sym[1:]
     fills = sorted(fills, key=lambda c: c.amount, reverse=True)
+    rate_of = lambda c: effective_rate(c.rate, frr)
     if len(fills) == 1:
         c = fills[0]
-        return (f"✅ {sym} 放貸成交！\n金額：{c.amount:,.2f} {ccy}\n"
-                f"利率：{c.rate:.6%}/天（年化 {fmt_apy(c.rate)}）\n"
+        tag = frr_tag(is_frr_offer(c))
+        suffix = "（浮動，隨 FRR 調整）" if tag else ""
+        return (f"✅ {tag}{sym} 放貸成交！\n金額：{c.amount:,.2f} {ccy}\n"
+                f"利率：{rate_of(c):.6%}/天（年化 {fmt_apy(rate_of(c))}）{suffix}\n"
                 f"天期：{c.period} 天")
     total = sum(c.amount for c in fills)
-    lines = [f"✅ {sym} 放貸成交 {len(fills)} 筆｜合計 {total:,.2f} {ccy}"]
-    lines += [f"・{c.amount:,.2f} {ccy}｜年化 {fmt_apy(c.rate)}｜{c.period} 天"
-              for c in fills]
+    # 標頭只在「整批都是 FRR」時標，混合批次靠各行自己的標記，免得以偏概全
+    tag = frr_tag(all(is_frr_offer(c) for c in fills))
+    lines = [f"✅ {tag}{sym} 放貸成交 {len(fills)} 筆｜合計 {total:,.2f} {ccy}"]
+    lines += [f"・{frr_tag(is_frr_offer(c))}{c.amount:,.2f} {ccy}｜"
+              f"年化 {fmt_apy(rate_of(c))}｜{c.period} 天" for c in fills]
     return "\n".join(lines)
 
 
@@ -77,12 +88,14 @@ def format_closes(sym: str, closes: list) -> str:
     closes = sorted(closes, key=lambda c: c["amount"], reverse=True)
     if len(closes) == 1:
         c = closes[0]
-        return (f"💸 {sym} 放貸結束（{c['reason']}）\n"
+        return (f"💸 {frr_tag(c.get('frr'))}{sym} 放貸結束（{c['reason']}）\n"
                 f"金額：{c['amount']:,.2f} {ccy}｜年化 {fmt_apy(c['rate'])}\n"
                 f"持有 {c['held_str']}（放滿 {c['period']} 天的 {c['held_pct']:.0f}%）")
     total = sum(c["amount"] for c in closes)
-    lines = [f"💸 {sym} 放貸結束 {len(closes)} 筆｜合計 {total:,.2f} {ccy}"]
-    lines += [f"・{c['amount']:,.2f} {ccy}｜年化 {fmt_apy(c['rate'])}｜持有 "
+    lines = [f"💸 {frr_tag(all(c.get('frr') for c in closes))}{sym} "
+             f"放貸結束 {len(closes)} 筆｜合計 {total:,.2f} {ccy}"]
+    lines += [f"・{frr_tag(c.get('frr'))}{c['amount']:,.2f} {ccy}｜"
+              f"年化 {fmt_apy(c['rate'])}｜持有 "
               f"{c['held_str']}（{c['held_pct']:.0f}%）｜{c['reason']}" for c in closes]
     return "\n".join(lines)
 
@@ -256,7 +269,7 @@ class Engine:
 
         # 4) 成交/結束偵測（第一輪只建基準不推播）+ 歷史回補（抓盲區內成交又秒還的單）
         #    本輪所有成交/結束彙整成「一則」推播，避免同時間連發多則洗版
-        blocks = self._track_credits(sym, st, credits, now_mts)
+        blocks = self._track_credits(sym, st, credits, now_mts, view.frr)
         if self.has_auth:
             blocks += self._reconcile_closed_history(sym, st)
         if blocks:
@@ -293,7 +306,7 @@ class Engine:
         self._save_status(sym, view, available, credits, offers, ts, wallet_balance)
 
     def _track_credits(self, sym: str, st: SymbolState, credits: list[Credit],
-                       now_mts: int) -> list[str]:
+                       now_mts: int, frr: float = 0.0) -> list[str]:
         """偵測新成交（出現）與放貸結束（消失），回傳推播區塊（由呼叫端彙整成一則）。
         結束原因判斷：實際持有 >= 天期的 98% 視為到期，否則是借款人提前還款。"""
         current = {c.id: c for c in credits}
@@ -309,27 +322,29 @@ class Engine:
         new_fills = []
         for cid in new_ids:
             c = current[cid]
+            eff = effective_rate(c.rate, frr)   # FRR 部位 rate=0 → 記當下 FRR
             self.store.log_action("fill", {
-                "symbol": sym, "id": c.id, "amount": c.amount, "rate": c.rate,
-                "period": c.period, "apy": round(daily_to_apy(c.rate) * 100, 2),
+                "symbol": sym, "id": c.id, "amount": c.amount, "rate": eff,
+                "period": c.period, "apy": round(daily_to_apy(eff) * 100, 2),
+                "frr": is_frr_offer(c),
             }, now_iso())
             new_fills.append(c)
         if new_fills and self.cfg.telegram.get("notify_fills", True):
-            blocks.append(format_fills(sym, new_fills))
+            blocks.append(format_fills(sym, new_fills, frr))
 
         closes = []
         for cid in closed_ids:
             c = st_known[cid]
             st.processed_closed.add(cid)
             closes.append(self._record_close(sym, c.amount, c.rate, c.period,
-                                             c.mts_opening, now_mts, cid))
+                                             c.mts_opening, now_mts, cid, frr=frr))
         if closes and self.cfg.telegram.get("notify_closes", True):
             blocks.append(format_closes(sym, closes))
         return blocks
 
     def _record_close(self, sym: str, amount: float, rate: float, period: int,
                       mts_opening: int, mts_close: int, cid: int,
-                      backfill: bool = False) -> dict:
+                      backfill: bool = False, frr: float = 0.0) -> dict:
         """記錄一筆結束放貸到 DB，回傳推播用顯示資料（推播由呼叫端彙整成一則）。"""
         held_days = max(0.0, (mts_close - mts_opening) / 86_400_000)
         matured = held_days >= period * 0.98
@@ -337,10 +352,12 @@ class Engine:
         reason = "到期歸還" if matured else "借款人提前還款"
         if backfill:
             reason += "・快速成交後歸還"
+        is_frr = not (rate and rate > 0)     # FRR 部位 rate=0 → 用當下 FRR 記錄
+        rate = effective_rate(rate, frr)
         self.store.log_action(action, {
             "symbol": sym, "id": cid, "amount": amount, "rate": rate,
             "apy": round(daily_to_apy(rate) * 100, 2), "period": period,
-            "held_days": round(held_days, 2),
+            "held_days": round(held_days, 2), "frr": is_frr,
             "opened": datetime.fromtimestamp(mts_opening / 1000,
                                              timezone.utc).isoformat(),
         }, now_iso())
@@ -353,7 +370,8 @@ class Engine:
         else:
             held_str = f"{held_minutes / 1440:.1f} 天"
         return {"amount": amount, "rate": rate, "period": period, "reason": reason,
-                "held_str": held_str, "held_pct": held_days / period * 100 if period else 0}
+                "frr": is_frr, "held_str": held_str,
+                "held_pct": held_days / period * 100 if period else 0}
 
     def _reconcile_closed_history(self, sym: str, st: SymbolState) -> list[str]:
         """用已結束放貸的歷史回補輪詢盲區（成交後快速歸還、兩次輪詢間來去的單）。
@@ -404,7 +422,12 @@ class Engine:
                 self.client.cancel_offer(o.id)
                 freed += o.amount
                 self.store.log_action("cancel", {"symbol": sym, "id": o.id,
-                                                 "rate": o.rate, "amount": o.amount}, ts)
+                                                 "rate": o.rate, "amount": o.amount,
+                                                 "frr": is_frr_offer(o)}, ts)
+                if is_frr_offer(o) and self.cfg.telegram.get("notify_frr", True):
+                    hrs = (now_mts - o.mts_created) / 3_600_000
+                    self.tg.notify(f"↩️ 【FRR】{sym} 試點撤回（等 {hrs:.1f} 小時未成交）\n"
+                                   f"金額：{o.amount:,.2f} {sym[1:]} 已還給階梯重新放貸")
             except BfxError as e:
                 log.warning("%s 撤單失敗 #%s: %s", sym, o.id, e)
         return freed
@@ -433,9 +456,18 @@ class Engine:
         try:
             self.client.submit_offer(sym, plan.amount, 0.0, plan.period,
                                      offer_type="FRRDELTAVAR")
+            cap = total * float(self.scfg["frr_pilot"]["max_alloc_pct"])
             log.info("%s FRR 試點掛單：%s（曝險 %.2f/%.2f）", sym, desc,
-                     exposure + plan.amount, total * float(self.scfg["frr_pilot"]["max_alloc_pct"]))
+                     exposure + plan.amount, cap)
             self.store.log_action("submit", detail, ts)
+            if self.cfg.telegram.get("notify_frr", True):
+                self.tg.notify(
+                    f"📌 【FRR】{sym} 試點掛單\n"
+                    f"金額：{plan.amount:,.2f} {sym[1:]}｜{plan.period} 天\n"
+                    f"利率：浮動 FRR（目前約 {fmt_apy(view.frr)}）\n"
+                    f"曝險：{exposure + plan.amount:,.2f} / 上限 {cap:,.2f}\n"
+                    f"（{int(float(self.scfg['frr_pilot'].get('timeout_minutes', 1440)) / 60)} "
+                    f"小時內未成交會自動撤回）")
             return max(0.0, available - plan.amount)
         except BfxError as e:
             log.warning("%s FRR 試點掛單失敗 %s: %s", sym, desc, e)
@@ -489,12 +521,16 @@ class Engine:
     def _save_status(self, sym: str, view: MarketView, available: float,
                      credits: list[Credit], offers: list[Offer], ts: str,
                      wallet_balance: float | None = None):
+        # FRR 單/部位的 rate 欄是 0（相對 FRR 的偏移量），統計與顯示一律換成當下 FRR，
+        # 否則會被當 0% 計入、把加權年化與應計統計拖低。frr 旗標讓網頁標示「FRR」。
         total = sum(c.amount for c in credits)
-        wrate = (sum(c.amount * c.rate for c in credits) / total) if total else 0.0
+        eff = {id(c): effective_rate(c.rate, view.frr) for c in credits}
+        wrate = (sum(c.amount * eff[id(c)] for c in credits) / total) if total else 0.0
         if credits:
             self.store.save_credits_snapshot(
                 sym, total, wrate, len(credits),
-                [{"amount": c.amount, "rate": c.rate, "period": c.period} for c in credits], ts)
+                [{"amount": c.amount, "rate": eff[id(c)], "period": c.period,
+                  "frr": is_frr_offer(c)} for c in credits], ts)
         now_ms = time.time() * 1000
         self.store.update_bot_status(sym, {
             "ts": ts, "mode": self.mode_name, "paused": self.paused,
@@ -502,11 +538,13 @@ class Engine:
             "wallet_balance": round(wallet_balance, 2) if wallet_balance is not None else None,
             "weighted_apy": round(daily_to_apy(wrate) * 100, 2) if wrate else 0,
             "credits_count": len(credits), "offers_count": len(offers),
-            "offers": [{"amount": o.amount, "rate": o.rate, "period": o.period}
+            "offers": [{"amount": o.amount, "rate": effective_rate(o.rate, view.frr),
+                        "period": o.period, "frr": is_frr_offer(o)}
                        for o in offers],
             "credits": [{
-                "amount": c.amount, "rate": c.rate, "period": c.period,
-                "apy": round(daily_to_apy(c.rate) * 100, 2),
+                "amount": c.amount, "rate": eff[id(c)], "period": c.period,
+                "apy": round(daily_to_apy(eff[id(c)]) * 100, 2),
+                "frr": is_frr_offer(c),
                 "opened": datetime.fromtimestamp(c.mts_opening / 1000,
                                                  timezone.utc).isoformat(),
                 "remaining_days": round(max(0.0, c.period

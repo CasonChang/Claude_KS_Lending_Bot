@@ -49,6 +49,9 @@ Bitfinex P2P 放貸自動化機器人。使用者說**繁體中文**，回覆請
     幣別明細「加權年化」、Telegram 成交/結束通知。
   - **實際入袋/效率類＝稅後扣 15%**：每日預估收益、放滿預估報酬、總結列、
     總預估年化（卡片＋幣別明細）、已結束放貸淨獲利。
+- **FRR 部位的顯示**：FRR 單/放貸的 `rate` 欄是 **0**（那是「相對 FRR 的偏移量」，不是利率）。
+  顯示與統計一律用 `effective_rate(rate, view.frr)` 換成**當下 FRR**，否則會被當 0% 拖低加權年化。
+  網頁該筆標「FRR」小標籤；Telegram 相關推播（掛單/撤單/成交/結束）開頭標 **【FRR】**。
 - **資金安全**：Bitfinex API key 只開 Account/Wallets 讀、Margin Funding 讀寫，**不開提幣**。
 - **秘密**：`.env` 永不進 git（已在 `.gitignore`）；Supabase `service_role` key 只在伺服器端
   （Zeabur env / 本機 .env），網頁只用 `anon` key。正式 secrets 現在在 Zeabur 環境變數。

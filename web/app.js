@@ -592,7 +592,9 @@ function renderCreditsBody() {
   const body = creditsRows.map((c) => {
     const remainPct = c.period ? Math.max(0, c.remaining_days / c.period) : 0;
     const bar = `<span class="mini-bar"><span style="width:${(1 - remainPct) * 100}%"></span></span>`;
-    return `<tr><td>${c.symbol}</td><td>$${c.amount.toLocaleString()}</td>
+    // FRR 浮動部位：年化用「當下 FRR」換算（其 rate 欄本身是 0＝相對 FRR 的偏移量），標記提醒會浮動
+    const frrTag = c.frr ? ` <span class="tag-frr" title="浮動利率，隨 FRR 每日調整">FRR</span>` : "";
+    return `<tr><td>${c.symbol}${frrTag}</td><td>$${c.amount.toLocaleString()}</td>
       <td>${pct(c.apy ?? dailyToApy(c.rate))}</td><td>${c.period} 天</td>
       <td class="good">+$${dailyIncome(c).toFixed(4)}</td>
       <td class="good">+$${fullIncome(c).toFixed(4)}</td>

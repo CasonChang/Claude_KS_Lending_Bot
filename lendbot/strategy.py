@@ -185,6 +185,12 @@ def is_frr_offer(offer) -> bool:
     return not (offer.rate and offer.rate > 0)
 
 
+def effective_rate(rate: float, frr: float) -> float:
+    """FRR 單/部位的 rate 欄存的是「相對 FRR 的偏移量」（我們用 0＝純 FRR），不是實際利率。
+    顯示與統計要換成當下 FRR，否則會被當 0% 計入、把加權年化拖低。"""
+    return frr if (not rate or rate <= 0) else rate
+
+
 def frr_pilot_plan(available: float, frr_exposure: float, total_capital: float,
                    view: MarketView, scfg: dict) -> FrrPlan | None:
     """需求觸發時，把當下可用資金撥一筆去掛浮動 FRR。額度用滿或沒觸發就回 None。

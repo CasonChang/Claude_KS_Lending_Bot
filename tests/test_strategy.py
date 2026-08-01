@@ -8,7 +8,8 @@ from lendbot.bfx_client import BookEntry, Credit, FundingTicker, FundingTrade, O
 from lendbot.engine import classify_flow, format_closes, format_fills
 from lendbot.strategy import (MarketView, analyze_market, apy_to_daily,
                               build_ladder, choose_period, daily_to_apy,
-                              frr_pilot_plan, iqm, is_frr_offer, should_cancel,
+                              effective_rate, frr_pilot_plan, iqm, is_frr_offer,
+                              should_cancel,
                               should_cancel_frr)
 
 NOW = 1_750_000_000_000  # 假的現在時間（毫秒）
@@ -403,3 +404,28 @@ def test_frr_offer_immune_to_normal_cancel():
     o = Offer(id=1, symbol="fUSD", mts_created=0, amount=500, rate=0.0, period=30)
     v = view_with(anchor=0.0003)
     assert not should_cancel(o, v, FRR_SCFG, 999 * 3600_000)
+
+
+def test_effective_rate_substitutes_frr():
+    assert effective_rate(0.0, 0.000347) == 0.000347      # FRR 部位 → 用當下 FRR
+    assert effective_rate(0.00029, 0.000347) == 0.00029   # 一般單 → 保持原利率
+
+
+def test_format_fills_marks_frr():
+    frr = 0.000347
+    only_frr = [Credit(id=1, symbol="fUSD", mts_opening=0, amount=210.31, rate=0.0, period=30)]
+    out = format_fills("fUSD", only_frr, frr)
+    assert "【FRR】" in out and "0.034700%" in out       # 標記＋用當下 FRR 顯示（非 0%）
+    normal = [Credit(id=2, symbol="fUSD", mts_opening=0, amount=300, rate=0.00029, period=30)]
+    assert "【FRR】" not in format_fills("fUSD", normal, frr)
+    # 混合批次：標頭不標，但 FRR 那一行要標
+    mixed = format_fills("fUSD", only_frr + normal, frr)
+    assert not mixed.splitlines()[0].startswith("✅ 【FRR】")
+    assert sum("【FRR】" in ln for ln in mixed.splitlines()) == 1
+
+
+def test_format_closes_marks_frr():
+    c = {"amount": 210.31, "rate": 0.000347, "period": 30, "reason": "借款人提前還款",
+         "frr": True, "held_str": "5.2 天", "held_pct": 17}
+    assert "【FRR】" in format_closes("fUSD", [c])
+    assert "【FRR】" not in format_closes("fUSD", [{**c, "frr": False}])
