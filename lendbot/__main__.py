@@ -53,10 +53,12 @@ def main():
     if cfg.env.learning_enabled:
         if cfg.env.has_monitor_auth:
             from .observer import LearningObserver
-            observer = LearningObserver(cfg, store)
-            threading.Thread(target=observer.run_forever, daemon=True,
-                             name="learning-observer").start()
-            tg.notify("🧪 學習模式已開啟：開始唯讀側錄子帳戶（不影響主策略）")
+            for symbol in cfg.learning_symbols:
+                observer = LearningObserver(cfg, store, symbol=symbol)
+                threading.Thread(target=observer.run_forever, daemon=True,
+                                 name=f"learning-observer-{symbol}").start()
+            tg.notify("🧪 學習模式已開啟：開始唯讀側錄子帳戶 "
+                      f"{', '.join(cfg.learning_symbols)}（不影響主策略）")
         else:
             log.warning("LEARNING_ENABLED 已開但缺 MONITOR_BFX_KEY/SECRET，觀察者未啟動")
 

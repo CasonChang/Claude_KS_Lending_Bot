@@ -56,6 +56,16 @@ class Config:
         return list(syms)
 
     @property
+    def learning_symbols(self) -> list[str]:
+        """子帳戶要唯讀側錄的幣別。
+
+        保留 ``LEARNING_SYMBOL`` 作為第一個（舊部署相容），並把正式策略已有的
+        symbols 一併觀察。這樣從 USD 擴充到 USDT 不需要再增加一組 API key，舊的
+        fUSD 狀態也不會因切換學習戰場而停止更新。
+        """
+        return list(dict.fromkeys([self.env.learning_symbol, *self.symbols]))
+
+    @property
     def rebalance(self) -> dict:
         return self.raw.get("rebalance", {})
 

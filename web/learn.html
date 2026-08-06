@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex, nofollow">
 <title>策略學習對照</title>
-<link rel="stylesheet" href="style.css?v=20260630a">
+<link rel="stylesheet" href="style.css?v=20260806a">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
@@ -57,15 +57,26 @@
       <button id="lockBtn" class="ghost">登出</button>
     </div>
 
+    <div class="currency-switch" aria-label="策略比較幣別">
+      <div>
+        <strong>比較戰場</strong>
+        <span class="muted small">USD 與 USDT 使用相同的主／子帳戶追蹤方式；切換只改顯示，不會下單。</span>
+      </div>
+      <div class="tf-btns" id="currencyTabs">
+        <button class="tf active" data-symbol="fUSD">USD</button>
+        <button class="tf" data-symbol="fUST">USDT</button>
+      </div>
+    </div>
+
     <div class="cards">
-      <div class="card"><div class="label">雙帳戶 USD 合計</div><div class="value" id="cBoth">—</div></div>
-      <div class="card"><div class="label"><span class="acct-main">主帳戶</span> USD 總額</div><div class="value" id="cMain">—</div></div>
-      <div class="card"><div class="label"><span class="acct-sub">子帳戶</span> USD 總額</div><div class="value" id="cSub">—</div></div>
+      <div class="card"><div class="label">雙帳戶 <span id="activeCurrency">USD</span> 合計</div><div class="value" id="cBoth">—</div></div>
+      <div class="card"><div class="label"><span class="acct-main">主帳戶</span> 總額</div><div class="value" id="cMain">—</div></div>
+      <div class="card"><div class="label"><span class="acct-sub">子帳戶</span> 總額</div><div class="value" id="cSub">—</div></div>
       <div class="card"><div class="label">近 7 日收益 主 vs 子</div><div class="value" id="cEarn7">—</div></div>
     </div>
 
     <div class="chart-box">
-      <h3>總對照（USD）<span class="muted small">　年化「稅前」＝市場掛單利率口徑；「稅後」＝扣 15% 手續費實拿</span></h3>
+      <h3><span id="compareTitle">總對照（USD）</span><span class="muted small">　年化「稅前」＝市場掛單利率口徑；「稅後」＝扣 15% 手續費實拿</span></h3>
       <table id="compareTable"><thead>
         <tr><th>指標</th><th class="acct-main">主帳戶（我們）</th><th class="acct-sub">子帳戶（對方）</th><th>領先</th></tr>
       </thead><tbody></tbody></table>
@@ -73,7 +84,7 @@
 
     <div class="chart-box">
       <div class="chart-head">
-        <h3>fUSD 成交利率 K 線（年化 %）</h3>
+        <h3 id="kTitle">fUSD 成交利率 K 線（年化 %）</h3>
         <div class="tf-btns" id="kTfs">
           <button class="tf" data-tf="15m">15m</button>
           <button class="tf active" data-tf="1h">1h</button>
@@ -116,7 +127,7 @@
     <p class="muted small" style="margin:2px 0 8px">ℹ️ 本頁年化一律為<b>單利</b>（日利率×365），與 Bitfinex 及多數外部服務顯示一致。<b>FRR</b>＝浮動利率（每日跟隨市場，非固定），標「FRR ~X%」為當下換算值。</p>
     <div class="grid2">
       <div class="chart-box">
-        <h3><span class="acct-main">主帳戶</span> 目前掛單（fUSD）</h3>
+        <h3><span class="acct-main">主帳戶</span> 目前掛單（<span data-symbol-label>fUSD</span>）</h3>
         <table id="offersMain"><thead><tr><th>金額</th><th>年化</th><th>天期</th></tr></thead><tbody></tbody></table>
       </div>
       <div class="chart-box">
@@ -142,7 +153,7 @@
 
     <div class="grid2">
       <div class="chart-box">
-        <h3><span class="acct-main">主帳戶</span> 放貸中（fUSD）</h3>
+        <h3><span class="acct-main">主帳戶</span> 放貸中（<span data-symbol-label>fUSD</span>）</h3>
         <table id="creditsMain"><thead><tr><th>金額</th><th>年化</th><th>天期</th><th>開始</th></tr></thead><tbody></tbody></table>
       </div>
       <div class="chart-box">
@@ -153,7 +164,7 @@
 
     <div class="grid2">
       <div class="chart-box">
-        <h3><span class="acct-main">主帳戶</span> 動作紀錄（fUSD，最近，可捲動）</h3>
+        <h3><span class="acct-main">主帳戶</span> 動作紀錄（<span data-symbol-label>fUSD</span>，最近，可捲動）</h3>
         <div class="flow-scroll"><table id="actionsMain"><thead><tr><th>時間</th><th>動作</th><th>金額</th><th>年化</th><th>天期</th></tr></thead><tbody></tbody></table></div>
       </div>
       <div class="chart-box">
@@ -177,6 +188,6 @@
 <footer class="muted small">學習期專用頁（無主頁連結）。子帳戶僅唯讀側錄，我們無法對其下單。</footer>
 
 <script src="config.js"></script>
-<script src="learn.js?v=20260718a"></script>
+<script src="learn.js?v=20260806a"></script>
 </body>
 </html>

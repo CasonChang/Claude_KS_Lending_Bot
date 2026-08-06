@@ -1,6 +1,6 @@
 """學習觀察者：唯讀側錄「子帳戶」（交由外部專業放貸策略操作）。
 
-目的：把子帳戶的掛單/放貸/收益完整側錄進 Supabase learning_* 表，
+目的：每個設定幣別各啟動一個唯讀 observer，把子帳戶的掛單/放貸/收益完整側錄進 Supabase learning_* 表，
 與主帳戶（我們的正式策略）並列比較，做為每日學習檢討的資料來源。
 
 安全紅線（沿用專案慣例）：
@@ -128,12 +128,12 @@ def diff_events(prev_offers: dict[int, Offer], cur_offers: dict[int, Offer],
 class LearningObserver:
     """唯讀觀察迴圈。由 __main__ 以 daemon thread 啟動（LEARNING_ENABLED=1）。"""
 
-    def __init__(self, cfg: Config, store: Store):
+    def __init__(self, cfg: Config, store: Store, symbol: str | None = None):
         self.cfg = cfg
         self.scfg = cfg.strategy
         self.store = store
         self.client = BfxClient(cfg.env.monitor_bfx_key, cfg.env.monitor_bfx_secret)
-        self.symbol = cfg.env.learning_symbol
+        self.symbol = symbol or cfg.env.learning_symbol
         self.currency = self.symbol[1:]
         self.poll_seconds = max(15, int(cfg.env.learning_poll_seconds))
         self.snapshot_seconds = max(60, int(cfg.env.learning_snapshot_minutes) * 60)
@@ -157,12 +157,12 @@ class LearningObserver:
         cut = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
         closed = self.store.select("learning_events", {
             "select": "offer_id", "event": "eq.credit_closed",
-            "ts": f"gte.{cut}", "limit": "20000"})
+            "symbol": f"eq.{self.symbol}", "ts": f"gte.{cut}", "limit": "20000"})
         self.processed_closed.update(r["offer_id"] for r in closed if r.get("offer_id") is not None)
         offs = self.store.select("learning_events", {
             "select": "offer_id",
             "event": "in.(offer_new,offer_filled,offer_canceled,offer_partial_fill)",
-            "ts": f"gte.{cut}", "limit": "50000"})
+            "symbol": f"eq.{self.symbol}", "ts": f"gte.{cut}", "limit": "50000"})
         self.seen_offers.update(r["offer_id"] for r in offs if r.get("offer_id") is not None)
         if self.seen_offers:
             # 有歷史紀錄＝重啟：不需建基準，直接回補停機期間錯過的掛單
