@@ -98,6 +98,27 @@ def test_credit_closed_early_vs_matured():
     assert closed[2]["detail"]["matured"] is True
 
 
+def test_credit_bucket_transition_with_new_id_is_not_closed():
+    """FRR 在 loans/credits 桶間移動會換 id，但開倉資料不變，不應誤報還款。"""
+    old = credit(60_676_734, amount=500, rate=0, period=120,
+                 opened=NOW - 12 * 3_600_000)
+    replacement = credit(463_340_851, amount=500, rate=0, period=120,
+                         opened=old.mts_opening)
+
+    events = diff_events({}, {}, {old.id: old}, {replacement.id: replacement}, NOW)
+
+    assert not by_event(events, "credit_closed")
+
+
+def test_similar_new_credit_with_different_opening_still_closes_old_credit():
+    old = credit(1, amount=500, rate=0, period=120, opened=NOW - 12 * 3_600_000)
+    genuinely_new = credit(2, amount=500, rate=0, period=120, opened=NOW)
+
+    events = diff_events({}, {}, {old.id: old}, {genuinely_new.id: genuinely_new}, NOW)
+
+    assert len(by_event(events, "credit_closed")) == 1
+
+
 def test_two_offers_one_credit_matches_only_one():
     o1 = offer(1, amount=1000, rate=0.0004, period=30)
     o2 = offer(2, amount=1000, rate=0.0004, period=30)

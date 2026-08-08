@@ -114,8 +114,28 @@ def diff_events(prev_offers: dict[int, Offer], cur_offers: dict[int, Offer],
     # （看得到掛單時）或掛單歷史補捉（掛出又秒成交、沒看到掛單時）記錄，避免同一筆成交
     # 記兩次。active_credits 的即時清單另存在 learning_status，不靠事件。
 
-    # 放貸：消失（還款/到期）
+    # Bitfinex 同一筆 FRR 可能在 loans ↔ credits 桶切換時更換 id；若開倉時間、
+    # 金額、利率與天期都相同，這只是同一部位換桶，不是還款。先配對後再判定消失，
+    # 避免一批 FRR 被誤記為 credit_closed（08-07 fUST 曾 10 筆同時誤報）。
+    new_credit_ids = cur_credits.keys() - prev_credits.keys()
+    transitioned_old: set[int] = set()
+    transitioned_new: set[int] = set()
+    for old_id in sorted(prev_credits.keys() - cur_credits.keys()):
+        old = prev_credits[old_id]
+        replacement = next((cur_credits[new_id] for new_id in new_credit_ids
+                            if new_id not in transitioned_new
+                            and abs(cur_credits[new_id].amount - old.amount) < 0.01
+                            and abs(cur_credits[new_id].rate - old.rate) < 1e-9
+                            and cur_credits[new_id].period == old.period
+                            and abs(cur_credits[new_id].mts_opening - old.mts_opening) <= 1_000), None)
+        if replacement is not None:
+            transitioned_old.add(old_id)
+            transitioned_new.add(replacement.id)
+
+    # 放貸：真正消失（還款/到期）
     for cid in sorted(prev_credits.keys() - cur_credits.keys()):
+        if cid in transitioned_old:
+            continue
         c = prev_credits[cid]
         held_days = max(0.0, (now_mts - c.mts_opening) / 86_400_000)
         events.append({"event": "credit_closed", "offer_id": c.id, "amount": c.amount,
