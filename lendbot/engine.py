@@ -60,6 +60,32 @@ def frr_tag(is_frr: bool) -> str:
     return "【FRR】" if is_frr else ""
 
 
+def format_learning_positions(rows: list[dict]) -> str:
+    """把 observer 的子帳戶現況格式化成 Telegram 日報段落。"""
+    if not rows:
+        return "👀 子帳戶持倉：尚無觀測資料"
+    lines = ["👀 子帳戶持倉（唯讀）"]
+    for row in sorted(rows, key=lambda r: r.get("symbol", "")):
+        symbol = row.get("symbol") or "?"
+        wallet = float(row.get("wallet_total") or 0)
+        available = float(row.get("available") or 0)
+        lent = float(row.get("lent_total") or 0)
+        credits = row.get("credits") or []
+        offers = row.get("offers") or []
+        frr_credits = [c for c in credits if c.get("frr")]
+        frr_lent = sum(float(c.get("amount") or 0) for c in frr_credits)
+        apy = float(row.get("weighted_apy") or 0)
+        lines.append(
+            f"{symbol}｜放貸 {lent:,.2f}/{wallet:,.2f}（{len(credits)} 筆，{apy:.2f}%）"
+            f"｜FRR {frr_lent:,.2f}（{len(frr_credits)} 筆）"
+            f"｜可用 {available:,.2f}｜掛單 {len(offers)} 筆")
+        # 小額累積利息會留在 available；至少 $150 或錢包 2% 才視為可能還款。
+        alert_floor = max(150.0, wallet * 0.02)
+        if wallet and available >= alert_floor:
+            lines.append(f"　⚠️ 可用餘額 {available:,.2f}，可能有部位還款，請檢查")
+    return "\n".join(lines)
+
+
 def format_fills(sym: str, fills: list, frr: float = 0.0) -> str:
     """把本輪所有新成交整理成一則推播（多筆合併，避免同時間洗版）。
     FRR 浮動單的 rate 欄是 0 → 用當下 FRR 顯示年化，並在開頭標【FRR】。"""
@@ -847,7 +873,17 @@ class Engine:
                                                     for s, a in self.ma_apy.items())
             self.tg.notify("📊 每日報告\n" + self._earnings_summary() + ma_line
                            + "\n\n" + self._yesterday_review()
+                           + "\n\n" + self._learning_status_text()
                            + "\n\n" + self._status_text())
+
+    def _learning_status_text(self) -> str:
+        """子帳戶各幣別持倉；供每日推播與 /learning 即時查詢。"""
+        rows = self.store.select("learning_status", {
+            "select": ("symbol,ts,wallet_total,available,lent_total,lent_count,"
+                       "offers_count,weighted_apy,offers,credits"),
+            "order": "symbol.asc",
+        })
+        return format_learning_positions(rows)
 
     # ════════ Telegram 指令 ════════
 
@@ -874,6 +910,7 @@ class Engine:
             "/rates": lambda _="": self._rates_text(),
             "/earnings": lambda _="": self._earnings_summary(),
             "/review": lambda _="": self._yesterday_review(),
+            "/learning": lambda _="": self._learning_status_text(),
             "/capital": lambda _="": self._cmd_capital(),
             "/pause": lambda _="": self._cmd_pause(),
             "/resume": lambda _="": self._cmd_resume(),
@@ -882,6 +919,7 @@ class Engine:
             "/help": lambda _="": (
                 "/status 狀態總覽\n/rates 市場利率\n/earnings 收益\n"
                 "/review 昨日策略檢討\n"
+                "/learning 子帳戶 USD／USDT 持倉（唯讀）\n"
                 "/capital 立刻偵測入金/出金/兌換並更新\n"
                 "/go 立刻執行最新建議掛單（觀察模式也會真的下單）\n"
                 "/lend 手動掛單，格式：/lend fUSD 250 11.5 7\n"
