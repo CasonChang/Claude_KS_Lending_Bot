@@ -379,6 +379,19 @@ def test_frr_pilot_limited_by_available():
     assert plan is not None and plan.amount == 180.0
 
 
+def test_frr_pilot_absolute_cap_does_not_grow_with_wallet():
+    v = view_with(anchor=0.0003, spike=True, recent_high=0.0004)
+    fixed = {**FRR_SCFG, "frr_pilot": {**FRR_SCFG["frr_pilot"], "max_amount": 1000,
+                                       "period_days": 120}}
+    plan = frr_pilot_plan(5000, 200, 10000, v, fixed)
+
+    assert plan is not None
+    assert plan.amount == 800.0
+    assert plan.period == 120
+    # 即使錢包增至 100,000，上限也仍是 1,000，不會再觸發新的 15% 額度。
+    assert frr_pilot_plan(5000, 1000, 100000, v, fixed) is None
+
+
 def test_frr_pilot_disabled():
     v = view_with(anchor=0.0003, spike=True, recent_high=0.0004)
     assert frr_pilot_plan(1000, 0, 10000, v, SCFG) is None

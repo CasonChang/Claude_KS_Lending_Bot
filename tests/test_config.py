@@ -13,8 +13,15 @@ def test_learning_symbols_are_unique_and_keep_legacy_symbol_first():
     assert cfg.learning_symbols == ["fUST", "fUSD"]
 
 
-def test_frr_second_stage_parameters():
+def test_frr_third_stage_parameters():
     pilot = load_config().strategy["frr_pilot"]
 
-    assert pilot["max_alloc_pct"] == 0.15
+    assert pilot["max_amount"] == 1000
+    assert pilot["period_days"] == 120
     assert pilot["timeout_minutes"] == 4320
+
+
+def test_frr_max_amount_env_override(monkeypatch):
+    monkeypatch.setenv("FRR_MAX_AMOUNT", "1250")
+
+    assert load_config().strategy["frr_pilot"]["max_amount"] == 1250

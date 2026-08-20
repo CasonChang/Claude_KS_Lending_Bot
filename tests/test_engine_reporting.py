@@ -1,4 +1,4 @@
-from lendbot.engine import format_learning_positions
+from lendbot.engine import Engine, format_learning_positions
 
 
 def test_format_learning_positions_shows_frr_and_repayment_warning():
@@ -25,3 +25,13 @@ def test_format_learning_positions_ignores_small_interest_balance():
 
     assert "fUST" in text
     assert "⚠️" not in text
+
+
+def test_frrcap_command_updates_runtime_absolute_cap():
+    engine = Engine.__new__(Engine)
+    engine.scfg = {"min_offer_usd": 150, "frr_pilot": {"max_amount": 1000}}
+
+    assert "1,000.00" in engine._cmd_frrcap("")
+    assert "暫時改為 1,250.00" in engine._cmd_frrcap("1250")
+    assert engine.scfg["frr_pilot"]["max_amount"] == 1250
+    assert "不可低於" in engine._cmd_frrcap("100")

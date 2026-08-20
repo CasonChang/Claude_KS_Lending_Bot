@@ -92,6 +92,15 @@ def load_config(config_path: Path | None = None) -> Config:
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
+    # Zeabur 可直接用環境變數控制 FRR 絕對曝險上限，不必為資金進出修改 repo。
+    # 複製一層，避免測試或呼叫端傳入的 YAML 物件被意外共用修改。
+    raw = dict(raw or {})
+    raw["strategy"] = dict(raw.get("strategy") or {})
+    raw["strategy"]["frr_pilot"] = dict(raw["strategy"].get("frr_pilot") or {})
+    frr_max = os.getenv("FRR_MAX_AMOUNT", "").strip()
+    if frr_max:
+        raw["strategy"]["frr_pilot"]["max_amount"] = float(frr_max)
+
     env = Env(
         bfx_key=os.getenv("BFX_API_KEY", "").strip(),
         bfx_secret=os.getenv("BFX_API_SECRET", "").strip(),

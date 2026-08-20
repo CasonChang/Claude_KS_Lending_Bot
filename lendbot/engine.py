@@ -17,7 +17,7 @@ from .logger import get_logger
 from .store import Store
 from .strategy import (MarketView, OfferPlan, analyze_market, apy_to_daily,
                        build_ladder, daily_to_apy, effective_rate, frr_pilot_plan,
-                       is_frr_offer, should_cancel, should_cancel_frr)
+                       frr_exposure_cap, is_frr_offer, should_cancel, should_cancel_frr)
 from .telegram_bot import TelegramBot
 
 log = get_logger("engine")
@@ -462,7 +462,7 @@ class Engine:
                          view: MarketView, now_mts: int, ts: str,
                          offers: list[Offer], credits: list[Credit],
                          wallet_balance: float | None) -> float:
-        """FRR 試點：需求觸發時，把當下可用資金撥一筆掛浮動 FRR（上限由 max_alloc_pct 控管）。
+        """FRR 試點：需求觸發時，把當下可用資金撥一筆掛浮動 FRR（固定金額硬上限）。
         回傳扣掉這筆之後的可用餘額，剩下的照常走階梯。模擬模式不參與（sim 不模擬 FRR）。"""
         if st.sim is not None or not (self.scfg.get("frr_pilot") or {}).get("enabled"):
             return available
@@ -482,7 +482,7 @@ class Engine:
         try:
             self.client.submit_offer(sym, plan.amount, 0.0, plan.period,
                                      offer_type="FRRDELTAVAR")
-            cap = total * float(self.scfg["frr_pilot"]["max_alloc_pct"])
+            cap = frr_exposure_cap(total, self.scfg)
             log.info("%s FRR 試點掛單：%s（曝險 %.2f/%.2f）", sym, desc,
                      exposure + plan.amount, cap)
             self.store.log_action("submit", detail, ts)
@@ -912,6 +912,7 @@ class Engine:
             "/review": lambda _="": self._yesterday_review(),
             "/learning": lambda _="": self._learning_status_text(),
             "/capital": lambda _="": self._cmd_capital(),
+            "/frrcap": self._cmd_frrcap,
             "/pause": lambda _="": self._cmd_pause(),
             "/resume": lambda _="": self._cmd_resume(),
             "/go": lambda _="": self._cmd_go(),
@@ -921,11 +922,31 @@ class Engine:
                 "/review 昨日策略檢討\n"
                 "/learning 子帳戶 USD／USDT 持倉（唯讀）\n"
                 "/capital 立刻偵測入金/出金/兌換並更新\n"
+                "/frrcap [金額] 查詢／暫時修改每幣別 FRR 硬上限\n"
                 "/go 立刻執行最新建議掛單（觀察模式也會真的下單）\n"
                 "/lend 手動掛單，格式：/lend fUSD 250 11.5 7\n"
                 "　　　（幣別 金額 年化% 天期）\n"
                 "/pause 暫停掛單\n/resume 恢復掛單"),
         })
+
+    def _cmd_frrcap(self, args: str = "") -> str:
+        """查詢或暫時修改每幣別 FRR 絕對上限；重啟後回到 env/config。"""
+        pilot = self.scfg.get("frr_pilot") or {}
+        current = frr_exposure_cap(0, self.scfg)
+        if not args.strip():
+            return (f"📏 FRR 每幣別硬上限：{current:,.2f}\n"
+                    "修改：/frrcap 1000（重啟後回到 FRR_MAX_AMOUNT/config.yaml）")
+        try:
+            amount = float(args.strip())
+        except ValueError:
+            return "格式：/frrcap 1000（金額需為數字）"
+        minimum = float(pilot.get("min_offer_usd", self.scfg.get("min_offer_usd", 150)))
+        if amount < minimum:
+            return f"❌ 上限不可低於最小掛單額 {minimum:,.2f}；若要停止 FRR，請在 Zeabur 關閉 pilot"
+        pilot["max_amount"] = amount
+        self.scfg["frr_pilot"] = pilot
+        return (f"✅ FRR 每幣別硬上限暫時改為 {amount:,.2f}\n"
+                "已成交／已掛部位不會被強制撤回；重啟後回到 FRR_MAX_AMOUNT/config.yaml")
 
     def _cmd_go(self) -> str:
         """以「當下」的餘額與最新市場重算建議並真的送出（觀察模式也執行）。

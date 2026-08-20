@@ -206,12 +206,24 @@ def frr_pilot_plan(available: float, frr_exposure: float, total_capital: float,
         view.frr > 0 and view.recent_high >= view.frr * near)
     if not triggered:
         return None
-    room = total_capital * float(pcfg.get("max_alloc_pct", 0.05)) - frr_exposure
+    room = frr_exposure_cap(total_capital, scfg) - frr_exposure
     min_offer = float(pcfg.get("min_offer_usd", scfg.get("min_offer_usd", 150)))
     amount = min(available, room)
     if amount < min_offer:
         return None
     return FrrPlan(amount=floor2(amount), period=int(pcfg.get("period_days", 30)))
+
+
+def frr_exposure_cap(total_capital: float, scfg: dict) -> float:
+    """回傳單一幣別 FRR 掛單＋放貸的金額上限。
+
+    ``max_amount`` 是目前的固定金額硬上限；保留 ``max_alloc_pct`` fallback，讓舊設定檔
+    升級時不會突然停擺。固定上限不隨入金／提幣改變，避免長達 120 天的部位失控累加。
+    """
+    pcfg = scfg.get("frr_pilot") or {}
+    if "max_amount" in pcfg:
+        return max(0.0, float(pcfg["max_amount"]))
+    return max(0.0, total_capital * float(pcfg.get("max_alloc_pct", 0.05)))
 
 
 def should_cancel_frr(offer: Offer, scfg: dict, now_mts: int) -> bool:
