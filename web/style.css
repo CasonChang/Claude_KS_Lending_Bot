@@ -91,6 +91,13 @@ button:hover { filter: brightness(1.1); }
 .lock-row { display: flex; gap: 8px; margin-top: 10px; }
 .lock-row input { flex: 1; max-width: 320px; }
 .status-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.account-switch {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 10px 14px; margin-bottom: 12px; border: 1px solid var(--border);
+  border-radius: 12px; background: var(--panel);
+}
+.account-switch > div:first-child { display: flex; flex-direction: column; gap: 3px; }
+.account-tag { color: var(--muted); font-size: .72rem; margin-right: 4px; }
 .currency-switch {
   display: flex; justify-content: space-between; align-items: center; gap: 12px;
   padding: 10px 14px; margin-bottom: 12px; border: 1px solid var(--border);
@@ -167,6 +174,7 @@ footer { margin-top: 28px; text-align: center; }
 
   /* chart-head 標題與按鈕直向堆疊，避免並排擠出界 */
   .chart-head { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .account-switch { align-items: flex-start; flex-direction: column; }
 }
 
 /* FRR 浮動部位標記：其 rate 欄為 0（相對 FRR 的偏移量），年化以當下 FRR 換算 */

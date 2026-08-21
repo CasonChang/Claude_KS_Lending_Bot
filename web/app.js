@@ -70,6 +70,9 @@ const chartColors = {
   line: "#4fc3f7", good: "#4caf80", bad: "#ef5350", warn: "#ffb74d",
 };
 const SYMBOL_COLORS = { fUSD: "#4fc3f7", fUST: "#4caf80", USD: "#4fc3f7", UST: "#4caf80" };
+const ACCOUNT_COLORS = { main: "#4fc3f7", child: "#ffb74d" };
+const accountLabel = (account) => account === "child" ? "子" : "主";
+const seriesKey = (row) => `${row.account || "main"}:${row.currency}`;
 
 Chart.defaults.color = chartColors.text;
 Chart.defaults.borderColor = chartColors.grid;
@@ -447,6 +450,26 @@ async function rpcDashboard(token) {
     if (!r.ok) return { error: `Supabase 回應 ${r.status}` };
     const data = await r.json();
     if (data === null) return { error: "密碼錯誤" };
+    // 014 migration 尚未執行時，沿用已存在的 learning_data RPC 補上子帳戶；
+    // 因此 GitHub Pages 更新後可立即使用，不必等使用者手動跑 SQL。
+    if (!data.child_statuses || !data.child_earnings) {
+      const learning = await fetch(`${CFG.SUPABASE_URL}/rest/v1/rpc/learning_data`, {
+        method: "POST",
+        headers: {
+          apikey: CFG.SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${CFG.SUPABASE_ANON_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ p_token: token }),
+      });
+      if (learning.ok) {
+        const child = await learning.json();
+        if (child) {
+          data.child_statuses = child.learning_status || [];
+          data.child_earnings = child.learning_earnings || [];
+        }
+      }
+    }
     return { data };
   } catch (e) {
     return { error: "Supabase 連線失敗" };
@@ -471,11 +494,33 @@ async function tryUnlock(token, silent = false) {
 }
 
 let earningsChart, anchorChart;
+let dashboardData = null;
+const selectedAccounts = new Set(["main"]);
+
+function normalizedStatuses(d) {
+  const main = (d.statuses || []).map((s) => ({ ...s, account: "main" }));
+  const child = (d.child_statuses || []).map((s) => ({
+    ...s, account: "child", mode: "子帳戶（唯讀）", paused: false,
+    wallet_balance: s.wallet_total, total_lent: s.lent_total,
+    credits_count: s.lent_count,
+  }));
+  return [...main, ...child].filter((s) => selectedAccounts.has(s.account));
+}
+
+function normalizedEarnings(d) {
+  const main = (d.earnings || []).map((e) => ({ ...e, account: "main" }));
+  const child = (d.child_earnings || []).map((e) => ({ ...e, account: "child" }));
+  return [...main, ...child].filter((e) => selectedAccounts.has(e.account));
+}
 
 function renderDashboard(d) {
-  const statuses = d.statuses || [];
+  if (d) dashboardData = d;
+  d = dashboardData || {};
+  const statuses = normalizedStatuses(d);
   const first = statuses[0] || {};
-  $("botMode").textContent = (first.mode || "未知") + (first.paused ? "（暫停中）" : "");
+  $("botMode").textContent = selectedAccounts.size > 1
+    ? "主＋子帳戶"
+    : (first.mode || "未知") + (first.paused ? "（暫停中）" : "");
 
   const newestTs = Math.max(0, ...statuses.map((s) => s.ts ? new Date(s.ts).getTime() : 0));
   if (newestTs) {
@@ -497,8 +542,10 @@ function renderDashboard(d) {
   $("dLent").textContent = "$" + totalLent.toLocaleString();
   $("dEstApy").textContent = pct(grandEstApy);
 
-  const earnings = d.earnings || [];
-  const total30 = earnings.reduce((a, e) => a + (e.amount || 0), 0);
+  const earnings = normalizedEarnings(d);
+  const cutoff30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const total30 = earnings.filter((e) => e.date >= cutoff30)
+    .reduce((a, e) => a + (e.amount || 0), 0);
   $("dEarn30").textContent = "$" + total30.toFixed(2);
 
   renderSymbolTable(statuses);
@@ -509,9 +556,10 @@ function renderDashboard(d) {
   drawAnchorChart(d.snapshots || []);
   renderOffers(statuses);
   renderSuggested(statuses);
-  renderClosed(d.closed_credits || []);
-  renderCapitalFlows(d.capital_flows || []);
-  renderActions(d.recent_actions || []);
+  const mainSelected = selectedAccounts.has("main");
+  renderClosed(mainSelected ? (d.closed_credits || []) : []);
+  renderCapitalFlows(mainSelected ? (d.capital_flows || []) : []);
+  renderActions(mainSelected ? (d.recent_actions || []) : []);
 }
 
 function fmtDate(iso) {
@@ -541,7 +589,7 @@ const CREDIT_SORT_KEYS = [
 
 function renderCredits(statuses) {
   creditsRows = statuses.flatMap((s) =>
-    (s.credits || []).map((c) => ({ symbol: s.symbol, ...c })));
+    (s.credits || []).map((c) => ({ symbol: s.symbol, account: s.account, ...c })));
   setupCreditsSortHeaders();
   renderCreditsBody();
 }
@@ -594,7 +642,7 @@ function renderCreditsBody() {
     const bar = `<span class="mini-bar"><span style="width:${(1 - remainPct) * 100}%"></span></span>`;
     // FRR 浮動部位：年化用「當下 FRR」換算（其 rate 欄本身是 0＝相對 FRR 的偏移量），標記提醒會浮動
     const frrTag = c.frr ? ` <span class="tag-frr" title="浮動利率，隨 FRR 每日調整">FRR</span>` : "";
-    return `<tr><td>${c.symbol}${frrTag}</td><td>$${c.amount.toLocaleString()}</td>
+    return `<tr><td><span class="account-tag">${accountLabel(c.account)}</span>${c.symbol}${frrTag}</td><td>$${c.amount.toLocaleString()}</td>
       <td>${pct(c.apy ?? dailyToApy(c.rate))}</td><td>${c.period} 天</td>
       <td class="good">+$${dailyIncome(c).toFixed(4)}</td>
       <td class="good">+$${fullIncome(c).toFixed(4)}</td>
@@ -685,7 +733,7 @@ function renderSymbolTable(statuses) {
     tbody.innerHTML = `<tr><td colspan="8" class="muted">機器人還沒回報</td></tr>`;
     return;
   }
-  const rows = statuses.map((s) => `<tr><td>${s.symbol}</td>
+  const rows = statuses.map((s) => `<tr><td><span class="account-tag">${accountLabel(s.account)}</span>${s.symbol}</td>
       <td>${money(walletTotal(s))}</td>
       <td>${money(s.total_lent)}</td>
       <td>${pct(s.weighted_apy ?? 0)}</td>
@@ -711,13 +759,16 @@ function renderSymbolTable(statuses) {
 
 function drawEarningsChart(earnings) {
   const dates = [...new Set(earnings.map((e) => e.date))].sort();
-  const currencies = [...new Set(earnings.map((e) => e.currency))];
-  const datasets = currencies.map((cur) => ({
-    label: cur,
+  const keys = [...new Set(earnings.map(seriesKey))];
+  const datasets = keys.map((key) => {
+    const [account, cur] = key.split(":");
+    return {
+    label: selectedAccounts.size > 1 ? `${accountLabel(account)}·${cur}` : cur,
     data: dates.map((d) =>
-      earnings.find((e) => e.date === d && e.currency === cur)?.amount ?? 0),
-    backgroundColor: SYMBOL_COLORS[cur] || chartColors.good,
-  }));
+      earnings.find((e) => e.date === d && seriesKey(e) === key)?.amount ?? 0),
+    backgroundColor: selectedAccounts.size > 1
+      ? ACCOUNT_COLORS[account] : (SYMBOL_COLORS[cur] || chartColors.good),
+  }});
   earningsChart?.destroy();
   earningsChart = new Chart($("earningsChart"), {
     type: "bar",
@@ -725,7 +776,7 @@ function drawEarningsChart(earnings) {
     options: {
       interaction: { mode: "index", intersect: false },
       plugins: {
-        legend: { display: currencies.length > 1 },
+        legend: { display: keys.length > 1 },
         tooltip: {
           callbacks: {
             label: (ctx) => `${ctx.dataset.label}：${(ctx.parsed.y || 0).toFixed(4)}`,
@@ -757,7 +808,7 @@ function renderDailyApyChart() {
   const earnings = apyEarnings;
   const feeFactor = apyFeeMode === "gross" ? 1 / NET : 1;
   const dates = [...new Set(earnings.map((e) => e.date))].sort();
-  const currencies = [...new Set(earnings.map((e) => e.currency))];
+  const keys = [...new Set(earnings.map(seriesKey))];
 
   let datasets;
   if (apyViewMode === "combined") {
@@ -775,16 +826,19 @@ function renderDailyApyChart() {
       pointRadius: 2, borderWidth: 2, tension: 0.2, spanGaps: true,
     }];
   } else {
-    datasets = currencies.map((cur) => ({
-      label: cur,
+    datasets = keys.map((key) => {
+      const [account, cur] = key.split(":");
+      return {
+      label: selectedAccounts.size > 1 ? `${accountLabel(account)}·${cur}` : cur,
       data: dates.map((d) => {
-        const e = earnings.find((x) => x.date === d && x.currency === cur);
+        const e = earnings.find((x) => x.date === d && seriesKey(x) === key);
         if (!e || !e.balance || e.balance <= e.amount) return null;
         return +(e.amount / (e.balance - e.amount) * 365 * 100 * feeFactor).toFixed(2);
       }),
-      borderColor: SYMBOL_COLORS[cur] || chartColors.line,
+      borderColor: selectedAccounts.size > 1
+        ? ACCOUNT_COLORS[account] : (SYMBOL_COLORS[cur] || chartColors.line),
       pointRadius: 2, borderWidth: 1.5, tension: 0.2, spanGaps: true,
-    }));
+    }});
   }
 
   dailyApyChart?.destroy();
@@ -792,7 +846,7 @@ function renderDailyApyChart() {
     type: "line",
     data: { labels: dates.map((d) => d.slice(5)), datasets },
     options: {
-      plugins: { legend: { display: apyViewMode === "split" && currencies.length > 1 } },
+      plugins: { legend: { display: apyViewMode === "split" && keys.length > 1 } },
       scales: { y: { ticks: { callback: (v) => v.toFixed(1) + "%" } } },
     },
   });
@@ -814,14 +868,14 @@ function renderWalletTrendChart() {
   const cutoffDate = walletTrendDays
     ? new Date(Date.now() - walletTrendDays * 86400000).toISOString().slice(0, 10)
     : "0000-00-00";
-  const currencies = [...new Set(walletTrendEarnings.map((e) => e.currency))];
+  const keys = [...new Set(walletTrendEarnings.map(seriesKey))];
 
   // 每個日期 × 幣別的 balance map
   const balMap = {};
   for (const e of walletTrendEarnings) {
     if (e.date < cutoffDate) continue;
     if (!balMap[e.date]) balMap[e.date] = {};
-    balMap[e.date][e.currency] = e.balance || 0;
+    balMap[e.date][seriesKey(e)] = e.balance || 0;
   }
   const dates = Object.keys(balMap).sort();
 
@@ -831,7 +885,7 @@ function renderWalletTrendChart() {
     isStacked = false;
     datasets = [{
       label: "總計",
-      data: dates.map((d) => currencies.reduce((s, cur) => s + (balMap[d]?.[cur] ?? 0), 0)),
+      data: dates.map((d) => keys.reduce((s, key) => s + (balMap[d]?.[key] ?? 0), 0)),
       backgroundColor: chartColors.good + "40",
       borderColor: chartColors.good,
       fill: true, pointRadius: 1.5, borderWidth: 2, tension: 0.15, spanGaps: true,
@@ -839,13 +893,17 @@ function renderWalletTrendChart() {
   } else {
     // 分幣別：堆疊各幣別 dataset
     isStacked = true;
-    datasets = currencies.map((cur) => ({
-      label: cur,
-      data: dates.map((d) => (balMap[d]?.[cur] ?? null)),
-      backgroundColor: (SYMBOL_COLORS[`f${cur}`] || chartColors.good) + "55",
-      borderColor: SYMBOL_COLORS[`f${cur}`] || chartColors.good,
+    datasets = keys.map((key) => {
+      const [account, cur] = key.split(":");
+      const color = selectedAccounts.size > 1
+        ? ACCOUNT_COLORS[account] : (SYMBOL_COLORS[`f${cur}`] || chartColors.good);
+      return {
+      label: selectedAccounts.size > 1 ? `${accountLabel(account)}·${cur}` : cur,
+      data: dates.map((d) => (balMap[d]?.[key] ?? null)),
+      backgroundColor: color + "55",
+      borderColor: color,
       fill: true, pointRadius: 1.5, borderWidth: 1.5, tension: 0.15, spanGaps: true,
-    }));
+    }});
   }
 
   walletTrendChart?.destroy();
@@ -971,6 +1029,20 @@ $("lockBtn").addEventListener("click", () => {
   $("dashPanel").classList.add("hidden");
   $("lockPanel").classList.remove("hidden");
 });
+
+// 帳戶範圍為複選；至少保留一個。切換只重繪已解鎖資料，不重打 RPC。
+document.querySelectorAll("#accountScope .tf").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    const account = btn.dataset.account;
+    if (selectedAccounts.has(account) && selectedAccounts.size > 1) {
+      selectedAccounts.delete(account);
+      btn.classList.remove("active");
+    } else {
+      selectedAccounts.add(account);
+      btn.classList.add("active");
+    }
+    if (dashboardData) renderDashboard();
+  }));
 
 // 立即刷新：手動重抓一次資料（數據每 5 分鐘才自動拉，等不及就按這個）
 $("refreshBtn").addEventListener("click", async () => {
