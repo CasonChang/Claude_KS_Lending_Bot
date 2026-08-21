@@ -1,4 +1,5 @@
-from lendbot.engine import Engine, format_learning_positions
+from lendbot.bfx_client import Credit, Offer
+from lendbot.engine import Engine, format_learning_positions, frr_exposure_with_reserve
 
 
 def test_format_learning_positions_shows_frr_and_repayment_warning():
@@ -35,3 +36,25 @@ def test_frrcap_command_updates_runtime_absolute_cap():
     assert "暫時改為 1,250.00" in engine._cmd_frrcap("1250")
     assert engine.scfg["frr_pilot"]["max_amount"] == 1250
     assert "不可低於" in engine._cmd_frrcap("100")
+
+
+def test_frr_exposure_counts_reserved_funds_missing_from_active_offers():
+    credits = [Credit(id=1, symbol="fUST", amount=3000, rate=0.0002,
+                      period=2, mts_opening=0)]
+
+    exposure, unidentified = frr_exposure_with_reserve(
+        available=0, wallet_balance=6000, offers=[], credits=credits)
+
+    assert exposure == 3000
+    assert unidentified == 3000
+
+
+def test_frr_exposure_does_not_double_count_known_fixed_offers():
+    offers = [Offer(id=1, symbol="fUSD", mts_created=0, amount=800,
+                    rate=0.0002, period=30)]
+
+    exposure, unidentified = frr_exposure_with_reserve(
+        available=200, wallet_balance=1000, offers=offers, credits=[])
+
+    assert exposure == 0
+    assert unidentified == 0

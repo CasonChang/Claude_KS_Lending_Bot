@@ -60,6 +60,24 @@ def frr_tag(is_frr: bool) -> str:
     return "【FRR】" if is_frr else ""
 
 
+def frr_exposure_with_reserve(available: float, wallet_balance: float,
+                              offers: list[Offer], credits: list[Credit]) -> tuple[float, float]:
+    """計算 FRR 曝險，並以錢包差額防止交易所暫漏 active offer 時重複下單。
+
+    正常時直接加總可辨識的 FRR offer/credit。若 funding wallet 顯示已有資金被預留，
+    但 active offers 回傳的已知掛單不足以解釋該差額，將「無法辨識的預留」也暫時計入
+    FRR 曝險。這是保守的安全閥：寧可暫時少掛，也不能突破 120 天硬上限。
+    回傳 (曝險, 無法辨識的預留金額)。
+    """
+    frr_known = (sum(o.amount for o in offers if is_frr_offer(o))
+                 + sum(c.amount for c in credits if is_frr_offer(c)))
+    lent = sum(c.amount for c in credits)
+    reserved = max(0.0, wallet_balance - available - lent)
+    known_offers = sum(o.amount for o in offers)
+    unidentified = max(0.0, reserved - known_offers)
+    return frr_known + unidentified, unidentified
+
+
 def format_learning_positions(rows: list[dict]) -> str:
     """把 observer 的子帳戶現況格式化成 Telegram 日報段落。"""
     if not rows:
@@ -466,9 +484,13 @@ class Engine:
         回傳扣掉這筆之後的可用餘額，剩下的照常走階梯。模擬模式不參與（sim 不模擬 FRR）。"""
         if st.sim is not None or not (self.scfg.get("frr_pilot") or {}).get("enabled"):
             return available
-        exposure = (sum(o.amount for o in offers if is_frr_offer(o))
-                    + sum(c.amount for c in credits if is_frr_offer(c)))
         total = wallet_balance or (available + sum(c.amount for c in credits))
+        exposure, unidentified = frr_exposure_with_reserve(
+            available, total, offers, credits)
+        if unidentified >= float((self.scfg.get("frr_pilot") or {}).get(
+                "min_offer_usd", self.scfg.get("min_offer_usd", 150))):
+            log.warning("%s 有 %.2f 資金已預留但 active offers 未回傳；計入 FRR 曝險，暫停加碼",
+                        sym, unidentified)
         plan = frr_pilot_plan(available, exposure, total, view, self.scfg)
         if plan is None:
             return available
