@@ -1,5 +1,6 @@
 from lendbot.bfx_client import Credit, Offer
-from lendbot.engine import Engine, format_learning_positions, frr_exposure_with_reserve
+from lendbot.engine import (Engine, format_learning_positions, frr_exposure_with_reserve,
+                            merge_funding_positions)
 
 
 def test_format_learning_positions_shows_frr_and_repayment_warning():
@@ -58,3 +59,17 @@ def test_frr_exposure_does_not_double_count_known_fixed_offers():
 
     assert exposure == 0
     assert unidentified == 0
+
+
+def test_merge_funding_positions_includes_loans_and_deduplicates_bucket_overlap():
+    credit = Credit(id=1, symbol="fUST", amount=500, rate=0, period=120,
+                    mts_opening=1)
+    loan = Credit(id=2, symbol="fUST", amount=1000, rate=0, period=120,
+                  mts_opening=2)
+    same_position_in_other_bucket = Credit(id=1, symbol="fUST", amount=500, rate=0,
+                                           period=120, mts_opening=1)
+
+    merged = merge_funding_positions([credit], [loan, same_position_in_other_bucket])
+
+    assert {position.id for position in merged} == {1, 2}
+    assert sum(position.amount for position in merged) == 1500

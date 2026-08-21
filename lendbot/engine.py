@@ -60,6 +60,18 @@ def frr_tag(is_frr: bool) -> str:
     return "【FRR】" if is_frr else ""
 
 
+def merge_funding_positions(credits: list[Credit], loans: list[Credit]) -> list[Credit]:
+    """合併 Bitfinex credits 與 loans 兩個放貸中桶，並以 id 去重。
+
+    credits 是已用於倉位的資金；loans 是借款人已取走、尚未用於倉位的資金，兩者都在
+    計息。FRR 部位常駐 loans，只讀 credits 會把已成交誤認成錢包預留或掛單。
+    """
+    merged = {c.id: c for c in credits}
+    for loan in loans:
+        merged.setdefault(loan.id, loan)
+    return list(merged.values())
+
+
 def frr_exposure_with_reserve(available: float, wallet_balance: float,
                               offers: list[Offer], credits: list[Credit]) -> tuple[float, float]:
     """計算 FRR 曝險，並以錢包差額防止交易所暫漏 active offer 時重複下單。
@@ -309,7 +321,8 @@ class Engine:
         else:
             wallet_balance, available = self.client.funding_wallet(currency)
             offers = self.client.active_offers(sym)
-            credits = self.client.active_credits(sym)
+            credits = merge_funding_positions(
+                self.client.active_credits(sym), self.client.active_loans(sym))
 
         # 4) 成交/結束偵測（第一輪只建基準不推播）+ 歷史回補（抓盲區內成交又秒還的單）
         #    本輪所有成交/結束彙整成「一則」推播，避免同時間連發多則洗版
@@ -1036,7 +1049,8 @@ class Engine:
             else:
                 try:
                     available = self.client.funding_available(currency)
-                    credits = self.client.active_credits(sym)
+                    credits = merge_funding_positions(
+                        self.client.active_credits(sym), self.client.active_loans(sym))
                     offers = self.client.active_offers(sym)
                     total = sum(c.amount for c in credits)
                     wrate = (sum(c.amount * c.rate for c in credits) / total) if total else 0
