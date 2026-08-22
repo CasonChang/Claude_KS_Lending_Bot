@@ -48,6 +48,9 @@ class MarketView:
     spike: bool          # 是否偵測到利率飆漲
     anchor: float        # 最終錨點利率（階梯的基準）
     rate_floor: float = 0.0  # 24 小時行情保底（避免短暫低迷掛太低）
+    long_trade_iqm: float = 0.0  # 近期 120 天固定成交 IQM
+    long_best_bid: float = 0.0   # 當下 120 天固定借款 bid 最高利率
+    long_trade_count: int = 0
 
 
 def analyze_market(ticker: FundingTicker, book: list[BookEntry],
@@ -68,6 +71,10 @@ def analyze_market(ticker: FundingTicker, book: list[BookEntry],
     lookback = int(scfg.get("trades_lookback", 120))
     rates = [t.rate for t in trades[:lookback]]
     anchor_iqm = iqm(rates)
+    long_rates = [t.rate for t in trades[:lookback] if t.period >= 120]
+    long_trade_iqm = iqm(long_rates)
+    long_bids = [b.rate for b in book if b.amount < 0 and b.period >= 120]
+    long_best_bid = max(long_bids, default=0.0)
 
     # 3) spike 偵測：近 N 分鐘最高成交 vs IQM
     window_mts = now_mts - int(scfg.get("spike_window_minutes", 15)) * 60_000
@@ -90,7 +97,9 @@ def analyze_market(ticker: FundingTicker, book: list[BookEntry],
 
     return MarketView(frr=ticker.frr, best_ask=best_ask, depth_rate=depth_rate,
                       trade_iqm=anchor_iqm, recent_high=recent_high,
-                      spike=spike, anchor=anchor, rate_floor=rate_floor)
+                      spike=spike, anchor=anchor, rate_floor=rate_floor,
+                      long_trade_iqm=long_trade_iqm, long_best_bid=long_best_bid,
+                      long_trade_count=len(long_rates))
 
 
 # ── 天期選擇 ──────────────────────────────────────────────
@@ -174,9 +183,11 @@ def build_ladder(available: float, view: MarketView, scfg: dict) -> list[OfferPl
 
 @dataclass(frozen=True)
 class FrrPlan:
-    """FRR 試點掛單（type=FRRDELTAVAR、rate=0 → 純浮動 FRR）。"""
+    """120 天試點掛單；可為浮動 FRR 或固定利率。"""
     amount: float
     period: int
+    rate: float = 0.0
+    offer_type: str = "FRRDELTAVAR"
 
 
 def is_frr_offer(offer) -> bool:
@@ -192,7 +203,8 @@ def effective_rate(rate: float, frr: float) -> float:
 
 
 def frr_pilot_plan(available: float, frr_exposure: float, total_capital: float,
-                   view: MarketView, scfg: dict) -> FrrPlan | None:
+                   view: MarketView, scfg: dict,
+                   allow_fixed_fallback: bool = False) -> FrrPlan | None:
     """需求觸發時，把當下可用資金撥一筆去掛浮動 FRR。額度用滿或沒觸發就回 None。
 
     觸發（任一）：(a) spike 偵測；(b) 近期最高成交 ≥ FRR × trigger_near_frr。
@@ -202,28 +214,45 @@ def frr_pilot_plan(available: float, frr_exposure: float, total_capital: float,
     if not pcfg.get("enabled") or total_capital <= 0:
         return None
     near = float(pcfg.get("trigger_near_frr", 0.98))
+    min_samples = int(pcfg.get("min_long_trade_samples", 5))
+    premium = float(pcfg.get("fixed_premium_ratio", 1.005))
+    fallback = float(pcfg.get("fixed_fallback_ratio", 0.95))
+    fixed_threshold = fallback if allow_fixed_fallback else premium
+    fixed_attractive = (view.long_trade_count >= min_samples and view.long_best_bid > 0
+                        and view.long_best_bid >= view.frr * fixed_threshold)
     triggered = (bool(pcfg.get("trigger_spike", True)) and view.spike) or (
-        view.frr > 0 and view.recent_high >= view.frr * near)
+        view.frr > 0 and view.recent_high >= view.frr * near) or fixed_attractive
     if not triggered:
         return None
-    room = frr_exposure_cap(total_capital, scfg) - frr_exposure
+    room = long_term_exposure_cap(total_capital, scfg) - frr_exposure
     min_offer = float(pcfg.get("min_offer_usd", scfg.get("min_offer_usd", 150)))
     amount = min(available, room)
     if amount < min_offer:
         return None
-    return FrrPlan(amount=floor2(amount), period=int(pcfg.get("period_days", 30)))
+    enough_long_data = view.long_trade_count >= min_samples
+    if (enough_long_data and view.long_best_bid > 0
+            and view.long_best_bid >= view.frr * fixed_threshold):
+        return FrrPlan(amount=floor2(amount), period=int(pcfg.get("period_days", 120)),
+                       rate=view.long_best_bid, offer_type="LIMIT")
+    return FrrPlan(amount=floor2(amount), period=int(pcfg.get("period_days", 120)))
 
 
-def frr_exposure_cap(total_capital: float, scfg: dict) -> float:
+def long_term_exposure_cap(total_capital: float, scfg: dict) -> float:
     """回傳單一幣別 FRR 掛單＋放貸的金額上限。
 
-    ``max_amount`` 是目前的固定金額硬上限；保留 ``max_alloc_pct`` fallback，讓舊設定檔
-    升級時不會突然停擺。固定上限不隨入金／提幣改變，避免長達 120 天的部位失控累加。
+    ``long_term_max_amount`` 是所有 120 天 FRR／固定部位的共同硬上限；保留舊欄位
+    fallback，讓既有部署升級時不會突然停擺。固定上限不隨入金／提幣改變。
     """
     pcfg = scfg.get("frr_pilot") or {}
-    if "max_amount" in pcfg:
+    if "long_term_max_amount" in pcfg:
+        return max(0.0, float(pcfg["long_term_max_amount"]))
+    if "max_amount" in pcfg:  # 2026-08-20 舊設定相容
         return max(0.0, float(pcfg["max_amount"]))
     return max(0.0, total_capital * float(pcfg.get("max_alloc_pct", 0.05)))
+
+
+# 舊名稱保留，避免既有研究腳本或外部引用中斷。
+frr_exposure_cap = long_term_exposure_cap
 
 
 def should_cancel_frr(offer: Offer, scfg: dict, now_mts: int) -> bool:

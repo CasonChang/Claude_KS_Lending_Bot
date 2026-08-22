@@ -83,7 +83,7 @@ Zeabur 偵測到 `Dockerfile` 就會用它建置。env 直接在 Zeabur 後台�
    | `SUPABASE_URL` | 同本機 |
    | `SUPABASE_SERVICE_KEY` | `service_role` key（伺服器端，勿外流）|
    | `DRY_RUN` | **先填 `true`**（觀察驗證），確認無誤再改 `false` |
-   | `FRR_MAX_AMOUNT` | 選填；每個幣別 FRR 掛單中＋放貸中的固定金額上限（目前預設 `1000`）|
+   | `LONG_TERM_MAX_AMOUNT` | 選填；每個幣別所有 120 天掛單＋放貸的固定金額上限（FRR／固定都算，預設 `1000`）|
 
 4. Deploy，看 Logs 出現 `啟動：觀察模式` + `Supabase：已連接｜Telegram：已連接`。
 

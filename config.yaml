@@ -71,8 +71,7 @@ strategy:
   # 子帳戶的 FRR 單靜置約 45 小時才成交 → 必須「掛著長等」，短逾時等於白掛。
   # 2026-08-20 第三階段：官方規則確認 offer 天期只要 >= bid 天期即可配對；120 天 offer
   # 能承接 2～120 天需求，7/30 天則接不到更長需求。改掛 120 天驗證成交率。
-  # 120 天成交後可能真的鎖滿，故不再用「錢包百分比」：提幣使總資金下降時，百分比額度會
-  # 難以直覺控制。改成每幣別固定金額硬上限，掛單中＋放貸中合計永遠不得超過此值。
+  # 120 天成交後可能真的鎖滿，故額度控管擴大為「所有 120 天掛單＋部位」（FRR 與固定利率都算）。
   # 經濟性：填到後每天多賺約 +2.3pt×額度；等 1 天的閒置成本 ~$0.14，需抱數天回本。
   #   實務參考：我們自己的高利單多半抱得久（fUSD 13-14% 那幾筆抱了 17~30 天、
   #   fUST 22.56%/120天 抱了 31.7 天），故回本門檻可期。
@@ -80,12 +79,15 @@ strategy:
   # 停損：FRR < book 應計 ×1.05 連續 3 天 → 把 enabled 改回 false。
   frr_pilot:
     enabled: true
-    max_amount: 1000         # 每幣別 FRR 掛單中＋放貸中硬上限；可由 FRR_MAX_AMOUNT env 覆寫
+    long_term_max_amount: 1000 # 每幣別所有 120 天掛單＋放貸硬上限；LONG_TERM_MAX_AMOUNT env 可覆寫
     min_offer_usd: 150
     period_days: 120         # 最大天期可承接所有 2～120 天 bid；成交後也可能真的鎖滿 120 天
     timeout_minutes: 4320    # 掛 72 小時仍沒成交才撤回，避免每天重掛洗掉排隊順位
     trigger_spike: true      # 觸發(a)：spike 偵測
     trigger_near_frr: 0.98   # 觸發(b)：近期最高成交 >= FRR × 0.98
+    fixed_premium_ratio: 1.005 # 120天固定 bid >= FRR×此值時，優先直接吃固定高利
+    fixed_fallback_ratio: 0.95 # FRR 等滿72h後，固定 bid 至少 FRR×此值才降價成交
+    min_long_trade_samples: 5 # 至少看到 N 筆近期120天成交才採用固定利率路徑
 
 dry_run:
   simulated_balance: 1000    # DRY_RUN 且沒 API key 時的模擬餘額

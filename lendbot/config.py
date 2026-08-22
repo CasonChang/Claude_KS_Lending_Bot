@@ -97,9 +97,10 @@ def load_config(config_path: Path | None = None) -> Config:
     raw = dict(raw or {})
     raw["strategy"] = dict(raw.get("strategy") or {})
     raw["strategy"]["frr_pilot"] = dict(raw["strategy"].get("frr_pilot") or {})
-    frr_max = os.getenv("FRR_MAX_AMOUNT", "").strip()
-    if frr_max:
-        raw["strategy"]["frr_pilot"]["max_amount"] = float(frr_max)
+    long_max = (os.getenv("LONG_TERM_MAX_AMOUNT", "").strip()
+                or os.getenv("FRR_MAX_AMOUNT", "").strip())  # 舊 Zeabur 變數相容
+    if long_max:
+        raw["strategy"]["frr_pilot"]["long_term_max_amount"] = float(long_max)
 
     env = Env(
         bfx_key=os.getenv("BFX_API_KEY", "").strip(),
