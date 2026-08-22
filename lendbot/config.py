@@ -92,7 +92,7 @@ def load_config(config_path: Path | None = None) -> Config:
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
-    # Zeabur 可直接用環境變數控制 FRR 絕對曝險上限，不必為資金進出修改 repo。
+    # Zeabur 可直接用環境變數控制所有 120 天部位的絕對曝險上限。
     # 複製一層，避免測試或呼叫端傳入的 YAML 物件被意外共用修改。
     raw = dict(raw or {})
     raw["strategy"] = dict(raw.get("strategy") or {})

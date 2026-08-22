@@ -238,7 +238,7 @@ def frr_pilot_plan(available: float, frr_exposure: float, total_capital: float,
 
 
 def long_term_exposure_cap(total_capital: float, scfg: dict) -> float:
-    """回傳單一幣別 FRR 掛單＋放貸的金額上限。
+    """回傳單一幣別所有 120 天掛單＋放貸的金額上限。
 
     ``long_term_max_amount`` 是所有 120 天 FRR／固定部位的共同硬上限；保留舊欄位
     fallback，讓既有部署升級時不會突然停擺。固定上限不隨入金／提幣改變。
