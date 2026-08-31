@@ -1,6 +1,6 @@
 """學習觀察者：唯讀側錄「子帳戶」（交由外部專業放貸策略操作）。
 
-目的：把子帳戶的掛單/放貸/收益完整側錄進 Supabase learning_* 表，
+目的：每個設定幣別各啟動一個唯讀 observer，把子帳戶的掛單/放貸/收益完整側錄進 Supabase learning_* 表，
 與主帳戶（我們的正式策略）並列比較，做為每日學習檢討的資料來源。
 
 安全紅線（沿用專案慣例）：
@@ -114,8 +114,28 @@ def diff_events(prev_offers: dict[int, Offer], cur_offers: dict[int, Offer],
     # （看得到掛單時）或掛單歷史補捉（掛出又秒成交、沒看到掛單時）記錄，避免同一筆成交
     # 記兩次。active_credits 的即時清單另存在 learning_status，不靠事件。
 
-    # 放貸：消失（還款/到期）
+    # Bitfinex 同一筆 FRR 可能在 loans ↔ credits 桶切換時更換 id；若開倉時間、
+    # 金額、利率與天期都相同，這只是同一部位換桶，不是還款。先配對後再判定消失，
+    # 避免一批 FRR 被誤記為 credit_closed（08-07 fUST 曾 10 筆同時誤報）。
+    new_credit_ids = cur_credits.keys() - prev_credits.keys()
+    transitioned_old: set[int] = set()
+    transitioned_new: set[int] = set()
+    for old_id in sorted(prev_credits.keys() - cur_credits.keys()):
+        old = prev_credits[old_id]
+        replacement = next((cur_credits[new_id] for new_id in new_credit_ids
+                            if new_id not in transitioned_new
+                            and abs(cur_credits[new_id].amount - old.amount) < 0.01
+                            and abs(cur_credits[new_id].rate - old.rate) < 1e-9
+                            and cur_credits[new_id].period == old.period
+                            and abs(cur_credits[new_id].mts_opening - old.mts_opening) <= 1_000), None)
+        if replacement is not None:
+            transitioned_old.add(old_id)
+            transitioned_new.add(replacement.id)
+
+    # 放貸：真正消失（還款/到期）
     for cid in sorted(prev_credits.keys() - cur_credits.keys()):
+        if cid in transitioned_old:
+            continue
         c = prev_credits[cid]
         held_days = max(0.0, (now_mts - c.mts_opening) / 86_400_000)
         events.append({"event": "credit_closed", "offer_id": c.id, "amount": c.amount,
@@ -128,12 +148,12 @@ def diff_events(prev_offers: dict[int, Offer], cur_offers: dict[int, Offer],
 class LearningObserver:
     """唯讀觀察迴圈。由 __main__ 以 daemon thread 啟動（LEARNING_ENABLED=1）。"""
 
-    def __init__(self, cfg: Config, store: Store):
+    def __init__(self, cfg: Config, store: Store, symbol: str | None = None):
         self.cfg = cfg
         self.scfg = cfg.strategy
         self.store = store
         self.client = BfxClient(cfg.env.monitor_bfx_key, cfg.env.monitor_bfx_secret)
-        self.symbol = cfg.env.learning_symbol
+        self.symbol = symbol or cfg.env.learning_symbol
         self.currency = self.symbol[1:]
         self.poll_seconds = max(15, int(cfg.env.learning_poll_seconds))
         self.snapshot_seconds = max(60, int(cfg.env.learning_snapshot_minutes) * 60)
@@ -157,12 +177,12 @@ class LearningObserver:
         cut = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
         closed = self.store.select("learning_events", {
             "select": "offer_id", "event": "eq.credit_closed",
-            "ts": f"gte.{cut}", "limit": "20000"})
+            "symbol": f"eq.{self.symbol}", "ts": f"gte.{cut}", "limit": "20000"})
         self.processed_closed.update(r["offer_id"] for r in closed if r.get("offer_id") is not None)
         offs = self.store.select("learning_events", {
             "select": "offer_id",
             "event": "in.(offer_new,offer_filled,offer_canceled,offer_partial_fill)",
-            "ts": f"gte.{cut}", "limit": "50000"})
+            "symbol": f"eq.{self.symbol}", "ts": f"gte.{cut}", "limit": "50000"})
         self.seen_offers.update(r["offer_id"] for r in offs if r.get("offer_id") is not None)
         if self.seen_offers:
             # 有歷史紀錄＝重啟：不需建基準，直接回補停機期間錯過的掛單
@@ -331,8 +351,9 @@ class LearningObserver:
         """
         ticker = self.client.funding_ticker(self.symbol)
         book = self.client.funding_book(self.symbol, length=100)
-        trades = self.client.funding_trades(
-            self.symbol, limit=int(self.scfg.get("trades_lookback", 120)))
+        trade_limit = max(int(self.scfg.get("trades_lookback", 120)),
+                          int(self.scfg.get("long_trades_lookback", 120)))
+        trades = self.client.funding_trades(self.symbol, limit=trade_limit)
         closes: list[float] = []
         floor_hours = int(self.scfg.get("floor_hours", 24))
         if floor_hours > 0:

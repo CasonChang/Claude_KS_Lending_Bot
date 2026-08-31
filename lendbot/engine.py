@@ -17,7 +17,8 @@ from .logger import get_logger
 from .store import Store
 from .strategy import (MarketView, OfferPlan, analyze_market, apy_to_daily,
                        build_ladder, daily_to_apy, effective_rate, frr_pilot_plan,
-                       is_frr_offer, should_cancel, should_cancel_frr)
+                       floor2, is_frr_offer, long_term_exposure_cap, should_cancel,
+                       should_cancel_frr)
 from .telegram_bot import TelegramBot
 
 log = get_logger("engine")
@@ -58,6 +59,66 @@ def classify_flow(description: str, amount: float) -> str | None:
 def frr_tag(is_frr: bool) -> str:
     """FRR 相關事件在推播開頭標明，方便一眼分辨浮動單與一般固定單。"""
     return "【FRR】" if is_frr else ""
+
+
+def merge_funding_positions(credits: list[Credit], loans: list[Credit]) -> list[Credit]:
+    """合併 Bitfinex credits 與 loans 兩個放貸中桶，並以 id 去重。
+
+    credits 是已用於倉位的資金；loans 是借款人已取走、尚未用於倉位的資金，兩者都在
+    計息。FRR 部位常駐 loans，只讀 credits 會把已成交誤認成錢包預留或掛單。
+    """
+    merged = {c.id: c for c in credits}
+    for loan in loans:
+        merged.setdefault(loan.id, loan)
+    return list(merged.values())
+
+
+def long_term_exposure_with_reserve(available: float, wallet_balance: float,
+                                    offers: list[Offer], credits: list[Credit]) -> tuple[float, float]:
+    """計算所有 120 天曝險，並以錢包差額防止 API 漏資料時重複下單。
+
+    正常時直接加總可辨識的 FRR offer/credit。若 funding wallet 顯示已有資金被預留，
+    但 active offers 回傳的已知掛單不足以解釋該差額，將「無法辨識的預留」也暫時計入
+    120 天曝險。這是保守的安全閥：寧可暫時少掛，也不能突破長期鎖倉硬上限。
+    回傳 (曝險, 無法辨識的預留金額)。
+    """
+    long_known = (sum(o.amount for o in offers if o.period >= 120)
+                  + sum(c.amount for c in credits if c.period >= 120))
+    lent = sum(c.amount for c in credits)
+    reserved = max(0.0, wallet_balance - available - lent)
+    known_offers = sum(o.amount for o in offers)
+    unidentified = max(0.0, reserved - known_offers)
+    return long_known + unidentified, unidentified
+
+
+# 舊名稱保留，避免外部引用中斷。
+frr_exposure_with_reserve = long_term_exposure_with_reserve
+
+
+def format_learning_positions(rows: list[dict]) -> str:
+    """把 observer 的子帳戶現況格式化成 Telegram 日報段落。"""
+    if not rows:
+        return "👀 子帳戶持倉：尚無觀測資料"
+    lines = ["👀 子帳戶持倉（唯讀）"]
+    for row in sorted(rows, key=lambda r: r.get("symbol", "")):
+        symbol = row.get("symbol") or "?"
+        wallet = float(row.get("wallet_total") or 0)
+        available = float(row.get("available") or 0)
+        lent = float(row.get("lent_total") or 0)
+        credits = row.get("credits") or []
+        offers = row.get("offers") or []
+        frr_credits = [c for c in credits if c.get("frr")]
+        frr_lent = sum(float(c.get("amount") or 0) for c in frr_credits)
+        apy = float(row.get("weighted_apy") or 0)
+        lines.append(
+            f"{symbol}｜放貸 {lent:,.2f}/{wallet:,.2f}（{len(credits)} 筆，{apy:.2f}%）"
+            f"｜FRR {frr_lent:,.2f}（{len(frr_credits)} 筆）"
+            f"｜可用 {available:,.2f}｜掛單 {len(offers)} 筆")
+        # 小額累積利息會留在 available；至少 $150 或錢包 2% 才視為可能還款。
+        alert_floor = max(150.0, wallet * 0.02)
+        if wallet and available >= alert_floor:
+            lines.append(f"　⚠️ 可用餘額 {available:,.2f}，可能有部位還款，請檢查")
+    return "\n".join(lines)
 
 
 def format_fills(sym: str, fills: list, frr: float = 0.0) -> str:
@@ -144,6 +205,7 @@ class SymbolState:
     announced_cancels: set[int] = field(default_factory=set)  # 觀察模式已記錄過的撤單建議
     processed_closed: set[int] = field(default_factory=set)   # 已處理過的結束單 id
     first_hist_sync: bool = True
+    long_fixed_fallback: bool = False  # FRR 等滿 timeout 後，下一輪可接受略低固定 120 天 bid
 
 
 class Engine:
@@ -231,7 +293,9 @@ class Engine:
         # 1) 市場數據與分析（含 24 小時 1h K 線做錨點保底）
         ticker = self.client.funding_ticker(sym)
         book = self.client.funding_book(sym, length=100)
-        trades = self.client.funding_trades(sym, limit=int(self.scfg.get("trades_lookback", 120)))
+        trade_limit = max(int(self.scfg.get("trades_lookback", 120)),
+                          int(self.scfg.get("long_trades_lookback", 120)))
+        trades = self.client.funding_trades(sym, limit=trade_limit)
         closes: list[float] = []
         floor_hours = int(self.scfg.get("floor_hours", 24))
         if floor_hours > 0:
@@ -265,7 +329,8 @@ class Engine:
         else:
             wallet_balance, available = self.client.funding_wallet(currency)
             offers = self.client.active_offers(sym)
-            credits = self.client.active_credits(sym)
+            credits = merge_funding_positions(
+                self.client.active_credits(sym), self.client.active_loans(sym))
 
         # 4) 成交/結束偵測（第一輪只建基準不推播）+ 歷史回補（抓盲區內成交又秒還的單）
         #    本輪所有成交/結束彙整成「一則」推播，避免同時間連發多則洗版
@@ -285,7 +350,8 @@ class Engine:
                 available = st.sim.balance
             available = self._maybe_place_frr(sym, st, available, view, now_mts, ts,
                                               offers, credits, wallet_balance)
-            self._place_ladder(sym, st, available, view, now_mts, ts)
+            self._place_ladder(sym, st, available, view, now_mts, ts,
+                               offers, credits, wallet_balance)
 
         # 7) 模擬成交（僅模擬模式）/ 建議掛單推播（僅觀察模式）
         if st.sim is not None:
@@ -424,6 +490,8 @@ class Engine:
                 self.store.log_action("cancel", {"symbol": sym, "id": o.id,
                                                  "rate": o.rate, "amount": o.amount,
                                                  "frr": is_frr_offer(o)}, ts)
+                if is_frr_offer(o):
+                    st.long_fixed_fallback = True
                 if is_frr_offer(o) and self.cfg.telegram.get("notify_frr", True):
                     hrs = (now_mts - o.mts_created) / 3_600_000
                     self.tg.notify(f"↩️ 【FRR】{sym} 試點撤回（等 {hrs:.1f} 小時未成交）\n"
@@ -436,35 +504,43 @@ class Engine:
                          view: MarketView, now_mts: int, ts: str,
                          offers: list[Offer], credits: list[Credit],
                          wallet_balance: float | None) -> float:
-        """FRR 試點：需求觸發時，把當下可用資金撥一筆掛浮動 FRR（上限由 max_alloc_pct 控管）。
+        """120 天試點：在 FRR 與固定高利間擇優，並受所有長單固定金額上限控制。
         回傳扣掉這筆之後的可用餘額，剩下的照常走階梯。模擬模式不參與（sim 不模擬 FRR）。"""
         if st.sim is not None or not (self.scfg.get("frr_pilot") or {}).get("enabled"):
             return available
-        exposure = (sum(o.amount for o in offers if is_frr_offer(o))
-                    + sum(c.amount for c in credits if is_frr_offer(c)))
         total = wallet_balance or (available + sum(c.amount for c in credits))
-        plan = frr_pilot_plan(available, exposure, total, view, self.scfg)
+        exposure, unidentified = long_term_exposure_with_reserve(
+            available, total, offers, credits)
+        if unidentified >= float((self.scfg.get("frr_pilot") or {}).get(
+                "min_offer_usd", self.scfg.get("min_offer_usd", 150))):
+            log.warning("%s 有 %.2f 資金已預留但 active offers 未回傳；計入120天曝險，暫停加碼",
+                        sym, unidentified)
+        plan = frr_pilot_plan(available, exposure, total, view, self.scfg,
+                              allow_fixed_fallback=st.long_fixed_fallback)
         if plan is None:
             return available
-        detail = {"symbol": sym, "amount": plan.amount, "rate": 0.0,
-                  "period": plan.period, "frr": True}
-        desc = f"{plan.amount:,.2f} @ FRR浮動 / {plan.period}天"
+        is_frr = plan.offer_type != "LIMIT"
+        detail = {"symbol": sym, "amount": plan.amount, "rate": plan.rate,
+                  "period": plan.period, "frr": is_frr, "long_term": True}
+        desc = (f"{plan.amount:,.2f} @ FRR浮動 / {plan.period}天" if is_frr else
+                f"{plan.amount:,.2f} @ {fmt_apy(plan.rate)}固定 / {plan.period}天")
         if self.dry_run:
-            log.info("[觀察] %s FRR 試點會掛：%s", sym, desc)
+            log.info("[觀察] %s 120天試點會掛：%s", sym, desc)
             self.store.log_action("submit(dry)", detail, ts)
             return available
         try:
-            self.client.submit_offer(sym, plan.amount, 0.0, plan.period,
-                                     offer_type="FRRDELTAVAR")
-            cap = total * float(self.scfg["frr_pilot"]["max_alloc_pct"])
-            log.info("%s FRR 試點掛單：%s（曝險 %.2f/%.2f）", sym, desc,
+            self.client.submit_offer(sym, plan.amount, plan.rate, plan.period,
+                                     offer_type=plan.offer_type)
+            st.long_fixed_fallback = False
+            cap = long_term_exposure_cap(total, self.scfg)
+            log.info("%s 120天試點掛單：%s（長單曝險 %.2f/%.2f）", sym, desc,
                      exposure + plan.amount, cap)
             self.store.log_action("submit", detail, ts)
             if self.cfg.telegram.get("notify_frr", True):
                 self.tg.notify(
-                    f"📌 【FRR】{sym} 試點掛單\n"
+                    f"📌 【{'FRR' if is_frr else '120天固定'}】{sym} 試點掛單\n"
                     f"金額：{plan.amount:,.2f} {sym[1:]}｜{plan.period} 天\n"
-                    f"利率：浮動 FRR（目前約 {fmt_apy(view.frr)}）\n"
+                    f"利率：{'浮動 FRR（目前約 ' + fmt_apy(view.frr) + '）' if is_frr else fmt_apy(plan.rate) + ' 固定'}\n"
                     f"曝險：{exposure + plan.amount:,.2f} / 上限 {cap:,.2f}\n"
                     f"（{int(float(self.scfg['frr_pilot'].get('timeout_minutes', 1440)) / 60)} "
                     f"小時內未成交會自動撤回）")
@@ -474,8 +550,25 @@ class Engine:
             return available
 
     def _place_ladder(self, sym: str, st: SymbolState, available: float,
-                      view: MarketView, now_mts: int, ts: str):
+                      view: MarketView, now_mts: int, ts: str,
+                      offers: list[Offer], credits: list[Credit],
+                      wallet_balance: float | None):
         plans = build_ladder(available, view, self.scfg)
+        total = wallet_balance or (available + sum(c.amount for c in credits))
+        exposure, _ = long_term_exposure_with_reserve(available, total, offers, credits)
+        long_room = max(0.0, long_term_exposure_cap(total, self.scfg) - exposure)
+        min_offer = float(self.scfg.get("min_offer_usd", 150))
+        capped_plans = []
+        for plan in plans:
+            if plan.period < 120:
+                capped_plans.append(plan)
+                continue
+            amount = min(plan.amount, long_room)
+            if amount >= min_offer:
+                capped_plans.append(OfferPlan(amount=floor2(amount), rate=plan.rate,
+                                               period=plan.period))
+                long_room -= amount
+        plans = capped_plans
         st.last_plans = plans
         for p in plans:
             desc = f"{p.amount:,.2f} @ {fmt_apy(p.rate)} / {p.period}天"
@@ -847,7 +940,17 @@ class Engine:
                                                     for s, a in self.ma_apy.items())
             self.tg.notify("📊 每日報告\n" + self._earnings_summary() + ma_line
                            + "\n\n" + self._yesterday_review()
+                           + "\n\n" + self._learning_status_text()
                            + "\n\n" + self._status_text())
+
+    def _learning_status_text(self) -> str:
+        """子帳戶各幣別持倉；供每日推播與 /learning 即時查詢。"""
+        rows = self.store.select("learning_status", {
+            "select": ("symbol,ts,wallet_total,available,lent_total,lent_count,"
+                       "offers_count,weighted_apy,offers,credits"),
+            "order": "symbol.asc",
+        })
+        return format_learning_positions(rows)
 
     # ════════ Telegram 指令 ════════
 
@@ -874,7 +977,10 @@ class Engine:
             "/rates": lambda _="": self._rates_text(),
             "/earnings": lambda _="": self._earnings_summary(),
             "/review": lambda _="": self._yesterday_review(),
+            "/learning": lambda _="": self._learning_status_text(),
             "/capital": lambda _="": self._cmd_capital(),
+            "/frrcap": self._cmd_frrcap,
+            "/longcap": self._cmd_frrcap,
             "/pause": lambda _="": self._cmd_pause(),
             "/resume": lambda _="": self._cmd_resume(),
             "/go": lambda _="": self._cmd_go(),
@@ -882,12 +988,33 @@ class Engine:
             "/help": lambda _="": (
                 "/status 狀態總覽\n/rates 市場利率\n/earnings 收益\n"
                 "/review 昨日策略檢討\n"
+                "/learning 子帳戶 USD／USDT 持倉（唯讀）\n"
                 "/capital 立刻偵測入金/出金/兌換並更新\n"
+                "/longcap [金額] 查詢／暫時修改每幣別所有120天硬上限\n"
                 "/go 立刻執行最新建議掛單（觀察模式也會真的下單）\n"
                 "/lend 手動掛單，格式：/lend fUSD 250 11.5 7\n"
                 "　　　（幣別 金額 年化% 天期）\n"
                 "/pause 暫停掛單\n/resume 恢復掛單"),
         })
+
+    def _cmd_frrcap(self, args: str = "") -> str:
+        """查詢或暫時修改每幣別所有 120 天部位上限；/frrcap 為舊別名。"""
+        pilot = self.scfg.get("frr_pilot") or {}
+        current = long_term_exposure_cap(0, self.scfg)
+        if not args.strip():
+            return (f"📏 120天部位每幣別硬上限：{current:,.2f}\n"
+                    "包含 FRR＋固定利率掛單／放貸；修改：/longcap 1000")
+        try:
+            amount = float(args.strip())
+        except ValueError:
+            return "格式：/longcap 1000（金額需為數字）"
+        minimum = float(pilot.get("min_offer_usd", self.scfg.get("min_offer_usd", 150)))
+        if amount < minimum:
+            return f"❌ 上限不可低於最小掛單額 {minimum:,.2f}；若要停止 FRR，請在 Zeabur 關閉 pilot"
+        pilot["long_term_max_amount"] = amount
+        self.scfg["frr_pilot"] = pilot
+        return (f"✅ 所有120天部位每幣別硬上限暫時改為 {amount:,.2f}\n"
+                "已成交／已掛部位不會被強制撤回；重啟後回到 LONG_TERM_MAX_AMOUNT/config.yaml")
 
     def _cmd_go(self) -> str:
         """以「當下」的餘額與最新市場重算建議並真的送出（觀察模式也執行）。
@@ -955,7 +1082,8 @@ class Engine:
             else:
                 try:
                     available = self.client.funding_available(currency)
-                    credits = self.client.active_credits(sym)
+                    credits = merge_funding_positions(
+                        self.client.active_credits(sym), self.client.active_loans(sym))
                     offers = self.client.active_offers(sym)
                     total = sum(c.amount for c in credits)
                     wrate = (sum(c.amount * c.rate for c in credits) / total) if total else 0

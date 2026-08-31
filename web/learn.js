@@ -9,8 +9,9 @@
 const CFG = window.APP_CONFIG || {};
 const $ = (id) => document.getElementById(id);
 const TOKEN_KEY = "dash_token";           // 與主 Dashboard 共用同一組密碼
-const SYM = "fUSD";                        // 學習期只比 USD
-const CUR = "USD";
+let SYM = "fUSD";
+let CUR = "USD";
+const currencyLabel = () => CUR === "UST" ? "USDT" : CUR;
 
 const FUNDING_FEE = 0.15;                  // Bitfinex 放貸利息抽 15%
 const NET = 1 - FUNDING_FEE;
@@ -133,7 +134,7 @@ function renderAll(d) {
   lastData = d;
   const mainStatus = (d.statuses || []).find((s) => s.symbol === SYM);
   const subStatus = (d.learning_status || []).find((s) => s.symbol === SYM)
-                    || (d.learning_status || [])[0];
+                    || null;
   const M = sideMetrics(mainStatus, d.main_earnings);
   const S = sideMetrics(subStatus, d.learning_earnings);
 
@@ -141,6 +142,8 @@ function renderAll(d) {
   const startStr = d.learning_start;
   const day = learningDayCount(startStr);
   const startInfo = startStr ? `｜🏁 起跑 ${startStr}（第 ${day} 天）` : "";
+
+  updateCurrencyLabels();
 
   // 觀察狀態（輪詢約 1 分鐘一次；超過 5 分沒更新就標紅）
   if (!subStatus) {
@@ -169,6 +172,25 @@ function renderAll(d) {
   renderMainActions(d.main_actions || []);
   renderSubEvents(d.learning_events || []);
   renderReviews(d.learning_reviews || []);
+}
+
+function updateCurrencyLabels() {
+  $("activeCurrency").textContent = currencyLabel();
+  $("compareTitle").textContent = `總對照（${currencyLabel()}）`;
+  $("kTitle").textContent = `${SYM} 成交利率 K 線（年化 %）`;
+  document.querySelectorAll("[data-symbol-label]").forEach((el) => { el.textContent = SYM; });
+}
+
+function switchSymbol(symbol) {
+  if (SYM === symbol) return;
+  SYM = symbol;
+  CUR = symbol.slice(1);
+  document.querySelectorAll("#currencyTabs .tf").forEach((b) =>
+    b.classList.toggle("active", b.dataset.symbol === symbol));
+  updateCurrencyLabels();
+  kState.series.setData([]);
+  subscribeCandles();
+  if (lastData) renderAll(lastData);
 }
 
 function renderCompareTable(M, S) {
@@ -252,8 +274,12 @@ function renderApyCompare(d) {
   const accFactor = apyFeeMode === "gross" ? 1 : NET;            // 應計 gross 是稅前值
   const m = seriesByDate(d.main_earnings), s = seriesByDate(d.learning_earnings);
   const mAcc = {}, sAcc = {};
-  for (const a of d.main_accrual || []) mAcc[a.day] = a;
-  for (const a of d.learning_accrual || []) sAcc[a.day] = a;
+  for (const a of d.main_accrual || []) {
+    if (a.symbol === SYM) mAcc[a.day] = a;
+  }
+  for (const a of d.learning_accrual || []) {
+    if (a.symbol === SYM) sAcc[a.day] = a;
+  }
 
   const earnedDays = new Set([
     ...Object.keys(m).map((x) => shiftDate(x, -1)),
@@ -506,7 +532,8 @@ const eventRowHtml = (e) => {
 
 function renderSubEvents(events) {
   // 顯示 RPC 回傳的全部（已上限 400 筆）；表格在自己的捲動框內，不撐長頁面
-  setSortable("eventsSub", events || [], eventRowHtml, { emptyMsg: "還沒有事件（觀察者啟動後，掛單有變動才會記）" });
+  setSortable("eventsSub", (events || []).filter((e) => e.symbol === SYM), eventRowHtml,
+    { emptyMsg: "還沒有事件（觀察者啟動後，掛單有變動才會記）" });
 }
 
 // 一次性掛上各表的可排序表頭（DOM 已就緒；資料由 renderAll 灌入）
@@ -566,7 +593,7 @@ function showReview(i) {
   $("rvNext").disabled = i <= 0;                         // 後一天＝更新＝idx 更小
 }
 
-// ═══════════ fUSD K 棒（公開 WebSocket，REST 沒開 CORS）═══════════
+// ═══════════ 所選幣別 K 棒（公開 WebSocket，REST 沒開 CORS）═══════════
 
 const WS_URL = "wss://api-pub.bitfinex.com/ws/2";
 const TZ_SHIFT = -new Date().getTimezoneOffset() * 60;
@@ -658,6 +685,9 @@ document.querySelectorAll("#kTfs .tf").forEach((btn) =>
     kState.series.setData([]);
     subscribeCandles();
   }));
+
+document.querySelectorAll("#currencyTabs .tf").forEach((btn) =>
+  btn.addEventListener("click", () => switchSymbol(btn.dataset.symbol)));
 
 // ═══════════ 初始化 ═══════════
 

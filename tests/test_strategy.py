@@ -134,6 +134,22 @@ def test_old_spike_ignored():
     assert not view.spike
 
 
+def test_long_trades_use_separate_recent_window():
+    """120 天樣本可超出一般 IQM 筆數，但不採用過期成交。"""
+    scfg = {**SCFG, "trades_lookback": 2, "long_trades_lookback": 10,
+            "long_trade_window_hours": 6}
+    trades = [
+        FundingTrade(mts=NOW - i * 60_000, amount=500, rate=0.0003, period=120)
+        for i in range(5)
+    ] + [
+        FundingTrade(mts=NOW - 7 * 3_600_000, amount=500, rate=0.0009, period=120)
+    ]
+    view = analyze_market(make_ticker(), make_book(), trades, scfg, NOW)
+    assert view.long_trade_count == 5
+    assert view.long_trade_iqm == 0.0003
+    assert view.trade_iqm == 0.0003
+
+
 # ── 天期 ──
 
 def test_choose_period_thresholds():
@@ -145,10 +161,10 @@ def test_choose_period_thresholds():
 
 # ── 階梯掛單 ──
 
-def view_with(anchor=0.0003, spike=False, recent_high=0.0):
+def view_with(anchor=0.0003, spike=False, recent_high=0.0, **kwargs):
     return MarketView(frr=0.0003, best_ask=0.0002, depth_rate=0.0002,
                       trade_iqm=anchor, recent_high=recent_high,
-                      spike=spike, anchor=anchor)
+                      spike=spike, anchor=anchor, **kwargs)
 
 
 def test_ladder_basic():
@@ -377,6 +393,50 @@ def test_frr_pilot_limited_by_available():
     v = view_with(anchor=0.0003, spike=True, recent_high=0.0004)
     plan = frr_pilot_plan(180, 0, 10000, v, FRR_SCFG)   # 可用只有 180
     assert plan is not None and plan.amount == 180.0
+
+
+def test_frr_pilot_absolute_cap_does_not_grow_with_wallet():
+    v = view_with(anchor=0.0003, spike=True, recent_high=0.0004)
+    fixed = {**FRR_SCFG, "frr_pilot": {**FRR_SCFG["frr_pilot"], "long_term_max_amount": 1000,
+                                       "period_days": 120}}
+    plan = frr_pilot_plan(5000, 200, 10000, v, fixed)
+
+    assert plan is not None
+    assert plan.amount == 800.0
+    assert plan.period == 120
+    # 即使錢包增至 100,000，上限也仍是 1,000，不會再觸發新的 15% 額度。
+    assert frr_pilot_plan(5000, 1000, 100000, v, fixed) is None
+
+
+def test_long_term_pilot_takes_fixed_120_bid_above_frr():
+    v = view_with(long_best_bid=0.00031, long_trade_iqm=0.000305,
+                  long_trade_count=8)
+    cfg = {**FRR_SCFG, "frr_pilot": {**FRR_SCFG["frr_pilot"], "period_days": 120}}
+    plan = frr_pilot_plan(500, 0, 10000, v, cfg)
+
+    assert plan is not None
+    assert plan.offer_type == "LIMIT"
+    assert plan.rate == 0.00031
+    assert plan.period == 120
+
+
+def test_long_term_pilot_uses_frr_before_timeout_when_fixed_bid_is_lower():
+    v = view_with(spike=True, long_best_bid=0.00029, long_trade_count=8)
+
+    plan = frr_pilot_plan(500, 0, 10000, v, FRR_SCFG)
+
+    assert plan is not None and plan.offer_type == "FRRDELTAVAR"
+
+
+def test_long_term_pilot_accepts_slightly_lower_fixed_bid_after_frr_timeout():
+    # 即使短期成交沒有 near-FRR/spike，timeout 後的固定候選本身也能觸發。
+    v = view_with(spike=False, recent_high=0, long_best_bid=0.00029, long_trade_count=8)
+
+    plan = frr_pilot_plan(500, 0, 10000, v, FRR_SCFG,
+                          allow_fixed_fallback=True)
+
+    assert plan is not None and plan.offer_type == "LIMIT"
+    assert plan.rate == 0.00029
 
 
 def test_frr_pilot_disabled():

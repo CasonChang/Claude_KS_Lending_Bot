@@ -56,6 +56,16 @@ class Config:
         return list(syms)
 
     @property
+    def learning_symbols(self) -> list[str]:
+        """子帳戶要唯讀側錄的幣別。
+
+        保留 ``LEARNING_SYMBOL`` 作為第一個（舊部署相容），並把正式策略已有的
+        symbols 一併觀察。這樣從 USD 擴充到 USDT 不需要再增加一組 API key，舊的
+        fUSD 狀態也不會因切換學習戰場而停止更新。
+        """
+        return list(dict.fromkeys([self.env.learning_symbol, *self.symbols]))
+
+    @property
     def rebalance(self) -> dict:
         return self.raw.get("rebalance", {})
 
@@ -81,6 +91,16 @@ def load_config(config_path: Path | None = None) -> Config:
     path = config_path or ROOT / "config.yaml"
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
+
+    # Zeabur 可直接用環境變數控制所有 120 天部位的絕對曝險上限。
+    # 複製一層，避免測試或呼叫端傳入的 YAML 物件被意外共用修改。
+    raw = dict(raw or {})
+    raw["strategy"] = dict(raw.get("strategy") or {})
+    raw["strategy"]["frr_pilot"] = dict(raw["strategy"].get("frr_pilot") or {})
+    long_max = (os.getenv("LONG_TERM_MAX_AMOUNT", "").strip()
+                or os.getenv("FRR_MAX_AMOUNT", "").strip())  # 舊 Zeabur 變數相容
+    if long_max:
+        raw["strategy"]["frr_pilot"]["long_term_max_amount"] = float(long_max)
 
     env = Env(
         bfx_key=os.getenv("BFX_API_KEY", "").strip(),
