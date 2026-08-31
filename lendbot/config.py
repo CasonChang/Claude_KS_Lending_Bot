@@ -102,6 +102,16 @@ def load_config(config_path: Path | None = None) -> Config:
     if long_max:
         raw["strategy"]["frr_pilot"]["long_term_max_amount"] = float(long_max)
 
+    # 每幣別總放貸上限：用於預留可提幣資金。不強制召回已放貸部位，
+    # 但會阻止還款後超過上限的本金再次掛出。
+    lending_caps = dict(raw["strategy"].get("lending_max_amounts") or {})
+    for env_name, symbol in (("LENDING_MAX_USD", "fUSD"),
+                             ("LENDING_MAX_USDT", "fUST")):
+        value = os.getenv(env_name, "").strip()
+        if value:
+            lending_caps[symbol] = float(value)
+    raw["strategy"]["lending_max_amounts"] = lending_caps
+
     env = Env(
         bfx_key=os.getenv("BFX_API_KEY", "").strip(),
         bfx_secret=os.getenv("BFX_API_SECRET", "").strip(),

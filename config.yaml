@@ -12,6 +12,10 @@ rebalance:
   switch_cost_pct: 0.2 # 估計單次轉換成本（算回本天數用）
 
 strategy:
+  # 每幣別「放貸中＋掛單中」總本金上限。0／未設＝不限制。
+  # 要預留提幣資金時，Zeabur 設 LENDING_MAX_USD / LENDING_MAX_USDT 即可覆寫。
+  lending_max_amounts: { fUSD: 0, fUST: 0 }
+
   # 錨點利率 = max(成交IQM, 掛單簿深度利率, min_rate_apy 換算的日利率)
   book_depth_usd: 300000     # 掛單簿前多少美元深度處的利率當參考
   trades_lookback: 120       # 取近幾筆成交算 IQM

@@ -25,3 +25,12 @@ def test_long_term_max_amount_env_override(monkeypatch):
     monkeypatch.setenv("LONG_TERM_MAX_AMOUNT", "1250")
 
     assert load_config().strategy["frr_pilot"]["long_term_max_amount"] == 1250
+
+
+def test_per_currency_lending_cap_env_overrides(monkeypatch):
+    monkeypatch.setenv("LENDING_MAX_USD", "9000")
+    monkeypatch.setenv("LENDING_MAX_USDT", "4500")
+
+    assert load_config().strategy["lending_max_amounts"] == {
+        "fUSD": 9000.0, "fUST": 4500.0,
+    }

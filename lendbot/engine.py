@@ -95,6 +95,21 @@ def long_term_exposure_with_reserve(available: float, wallet_balance: float,
 frr_exposure_with_reserve = long_term_exposure_with_reserve
 
 
+def lending_placement_available(symbol: str, available: float,
+                                offers: list[Offer], credits: list[Credit],
+                                scfg: dict) -> float:
+    """套用每幣別總放貸本金上限，回傳本輪最多可新掛金額。
+
+    上限同時計入 active credits/loans 與 active offers；0 或未設時維持舊行為。
+    """
+    caps = scfg.get("lending_max_amounts") or {}
+    cap = float(caps.get(symbol, caps.get(symbol[1:], 0)) or 0)
+    if cap <= 0:
+        return max(0.0, available)
+    committed = sum(c.amount for c in credits) + sum(o.amount for o in offers)
+    return max(0.0, min(available, cap - committed))
+
+
 def format_learning_positions(rows: list[dict]) -> str:
     """把 observer 的子帳戶現況格式化成 Telegram 日報段落。"""
     if not rows:
@@ -342,12 +357,23 @@ class Engine:
 
         # 5) 撤掉過時掛單 + 6) 階梯掛單
         if not self.paused:
+            cap_freed = self._cancel_over_lending_cap(sym, st, offers, credits, ts)
+            if cap_freed > 0 and self.has_auth and not self.dry_run:
+                time.sleep(2)
+                available = self.client.funding_available(currency)
+                offers = self.client.active_offers(sym)
+            elif cap_freed > 0 and st.sim is not None:
+                available, offers = st.sim.balance, list(st.sim.offers)
             freed = self._cancel_stale(sym, st, offers, view, now_mts, ts)
             if freed > 0 and self.has_auth and not self.dry_run:
                 time.sleep(2)  # 等餘額釋放
                 available = self.client.funding_available(currency)
+                offers = self.client.active_offers(sym)
             elif st.sim is not None:
                 available = st.sim.balance
+                offers = list(st.sim.offers)
+            available = lending_placement_available(
+                sym, available, offers, credits, self.scfg)
             available = self._maybe_place_frr(sym, st, available, view, now_mts, ts,
                                               offers, credits, wallet_balance)
             self._place_ladder(sym, st, available, view, now_mts, ts,
@@ -498,6 +524,42 @@ class Engine:
                                    f"金額：{o.amount:,.2f} {sym[1:]} 已還給階梯重新放貸")
             except BfxError as e:
                 log.warning("%s 撤單失敗 #%s: %s", sym, o.id, e)
+        return freed
+
+    def _cancel_over_lending_cap(self, sym: str, st: SymbolState,
+                                 offers: list[Offer], credits: list[Credit],
+                                 ts: str) -> float:
+        """上限調低時撤掉超額掛單；已成交部位只等借款人還款。"""
+        caps = self.scfg.get("lending_max_amounts") or {}
+        cap = float(caps.get(sym, caps.get(sym[1:], 0)) or 0)
+        if cap <= 0:
+            return 0.0
+        offer_room = max(0.0, cap - sum(c.amount for c in credits))
+        kept = 0.0
+        excess: list[Offer] = []
+        for offer in sorted(offers, key=lambda o: o.mts_created):  # 保留排隊最久的單
+            if kept + offer.amount <= offer_room + 0.01:
+                kept += offer.amount
+            else:
+                excess.append(offer)
+        freed = 0.0
+        for offer in excess:
+            detail = {"symbol": sym, "id": offer.id, "amount": offer.amount,
+                      "rate": offer.rate, "period": offer.period, "reason": "lending_cap"}
+            if self.dry_run:
+                if st.sim is not None:
+                    st.sim.cancel(offer.id)
+                    freed += offer.amount
+                self.store.log_action("cancel_cap(dry)", detail, ts)
+                continue
+            try:
+                self.client.cancel_offer(offer.id)
+                freed += offer.amount
+                self.store.log_action("cancel_cap", detail, ts)
+                log.info("%s 總放貸上限 %.2f：撤掉超額掛單 #%s %.2f",
+                         sym, cap, offer.id, offer.amount)
+            except BfxError as e:
+                log.warning("%s 超額掛單 #%s 撤銷失敗: %s", sym, offer.id, e)
         return freed
 
     def _maybe_place_frr(self, sym: str, st: SymbolState, available: float,

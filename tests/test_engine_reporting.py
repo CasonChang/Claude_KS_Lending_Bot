@@ -1,6 +1,6 @@
 from lendbot.bfx_client import Credit, Offer
 from lendbot.engine import (Engine, format_learning_positions, frr_exposure_with_reserve,
-                            merge_funding_positions)
+                            lending_placement_available, merge_funding_positions)
 
 
 def test_format_learning_positions_shows_frr_and_repayment_warning():
@@ -87,3 +87,18 @@ def test_merge_funding_positions_includes_loans_and_deduplicates_bucket_overlap(
 
     assert {position.id for position in merged} == {1, 2}
     assert sum(position.amount for position in merged) == 1500
+
+
+def test_lending_cap_leaves_repaid_excess_available():
+    credits = [Credit(id=1, symbol="fUSD", amount=8000, rate=0.0002,
+                      period=2, mts_opening=0)]
+    offers = [Offer(id=2, symbol="fUSD", mts_created=0, amount=500,
+                    rate=0.0002, period=2)]
+    scfg = {"lending_max_amounts": {"fUSD": 9000}}
+
+    assert lending_placement_available("fUSD", 2000, offers, credits, scfg) == 500
+
+
+def test_zero_lending_cap_means_unlimited_for_backwards_compatibility():
+    assert lending_placement_available(
+        "fUST", 1234, [], [], {"lending_max_amounts": {"fUST": 0}}) == 1234
