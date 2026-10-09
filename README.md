@@ -111,6 +111,24 @@ Zeabur 偵測到 `Dockerfile` 就會用它建置。env 直接在 Zeabur 後台�
 > ⚠️ 用 GitHub Actions 部署 Pages，repo 可以維持 **private**，
 > 但 Pages 網址本身是公開的——個人數據有密碼（token）保護，市場數據本來就公開。
 
+## Telegram 快捷選單
+
+常用查詢：`/status`（狀態、餘額與額度）、`/rates`（利率）、`/earnings`（收益）、
+`/review`（昨日檢討）、`/longcap`（120天額度）、`/help`（全部指令）。
+`/capital` 同步資金變動，`/learning` 查子帳戶最後觀測資料，`/pause`／`/resume` 控制自動掛單。
+
+環境已提供 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` 時，可只設定指定聊天室的選單與底部鍵盤：
+
+```bash
+python tools/setup_telegram_menu.py --check
+python tools/setup_telegram_menu.py --apply
+```
+
+此工具不啟動引擎或 `getUpdates`，不會與 Zeabur 的輪詢搶更新。
+`--apply` 會更新該 chat 的指令選單並送出一則快捷鍵訊息，底部六個按鈕都是查詢指令；
+暫停／恢復另放在指令選單。Telegram 會保存選單，無須每次部署重設。
+需要允許連線到 `api.telegram.org`；金鑰只從系統環境讀取，勿貼到聊天或指令列。
+
 ## 策略調整
 
 ### 總放貸上限與出金
