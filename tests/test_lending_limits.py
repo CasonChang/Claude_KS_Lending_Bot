@@ -158,6 +158,21 @@ def test_cancel_and_repayment_do_not_refund_batch_and_coins_are_independent():
     assert bot._long_batch_room("fUSD", 31 * 60_000) == 300
 
 
+def test_status_read_cannot_erase_submission_added_during_window_check():
+    bot = batched_engine()
+    class AppendDuringRead(list):
+        def __iter__(self):
+            yield from self.copy()
+            # 模擬 status 讀完舊紀錄、但送單執行緒剛寫入新預留的時機。
+            self.append((61 * 60_000, 1000))
+    st = bot.states["fUSD"]
+    st.long_submissions = AppendDuringRead([(0, 500)])
+    bot._long_batch_room("fUSD", 61 * 60_000)
+    assert (61 * 60_000, 1000) in st.long_submissions
+    st.long_submissions = st.long_submissions.copy()
+    assert bot._long_batch_room("fUSD", 61 * 60_000) == 0
+
+
 def test_uncertain_submission_failure_reserves_batch_against_duplicate_retry():
     client = FakeClient(wallet=20000)
     client.submit_offer = Mock(side_effect=BfxError("timeout; acceptance unknown"))

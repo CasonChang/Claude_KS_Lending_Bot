@@ -595,16 +595,20 @@ class Engine:
         window = int(float(pcfg.get("batch_window_minutes", 30)) * 60_000)
         if now_mts < st.long_batch_started_mts + window:
             return 0.0
-        st.long_submissions = [(ts, amount) for ts, amount in st.long_submissions
-                               if ts > now_mts - window]
+        # /status 可在循環送單時讀取；查額度不替換記錄，避免抹掉另一執行緒剛預留的單。
         return max(0.0, float(pcfg["batch_max_amount"])
-                   - sum(amount for _, amount in st.long_submissions))
+                   - sum(amount for ts, amount in st.long_submissions if ts > now_mts - window))
 
     def _record_long_submission(self, sym: str, amount: float, period: int,
                                 now_mts: int | None = None):
         if period >= 120:
-            self.states[sym].long_submissions.append(
-                (int(time.time() * 1000) if now_mts is None else now_mts, amount))
+            # 所有送單路徑由 _funding_lock 保護，只在送單端清理過期紀錄。
+            now_mts = int(time.time() * 1000) if now_mts is None else now_mts
+            window = int(float((self.scfg.get("frr_pilot") or {}).get("batch_window_minutes", 30)) * 60_000)
+            st = self.states[sym]
+            st.long_submissions = [(ts, amount) for ts, amount in st.long_submissions
+                                   if ts > now_mts - window]
+            st.long_submissions.append((now_mts, amount))
 
     def _maybe_place_frr(self, sym: str, st: SymbolState, available: float,
                          view: MarketView, now_mts: int, ts: str,
