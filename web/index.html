@@ -52,8 +52,10 @@
       </div>
     </div>
     <div class="cards">
-      <div class="card"><div class="label">錢包總額</div><div class="value" id="dWallet">—</div></div>
-      <div class="card"><div class="label">放貸中</div><div class="value" id="dLent">—</div></div>
+      <div class="card"><div class="label">放貸錢包總額<span class="tip" data-tip="只含 funding 放貸錢包，不含交易錢包。">ⓘ</span></div><div class="value" id="dWallet">—</div></div>
+      <div class="card"><div class="label">放貸中</div><div class="value" id="dLent">—</div><div class="muted small" id="dUtilization">—</div></div>
+      <div class="card"><div class="label">掛單中本金<span class="tip" data-tip="已預留給未成交掛單的本金，目前還沒有產生利息。">ⓘ</span></div><div class="value" id="dOffered">—</div></div>
+      <div class="card"><div class="label">可用餘額<span class="tip" data-tip="放貸錢包中尚未放貸或掛單的資金，包含受總上限保留的餘額及未達最小掛單額的零頭。">ⓘ</span></div><div class="value" id="dAvailable">—</div></div>
       <div class="card"><div class="label">總預估年化<span class="tip" data-tip="以整個錢包（放貸中＋掛單中＋可用）為分母的實際年化，已扣 15% 手續費。閒置或未成交的資金會把它拉低，反映真實資金效率。">ⓘ</span></div><div class="value good" id="dEstApy">—</div></div>
       <div class="card"><div class="label">近 30 日收益</div><div class="value good" id="dEarn30">—</div></div>
     </div>
@@ -87,11 +89,28 @@
       <canvas id="walletTrendChart"></canvas>
     </div>
     <div class="charts">
-      <div class="chart-box"><h3>每日收益（30 日，實際入帳）</h3><canvas id="earningsChart"></canvas></div>
       <div class="chart-box">
         <div class="chart-head">
-          <h3>每日實際年化 <span class="muted small">利息÷當日資金規模，出入金當天會失真</span></h3>
+          <h3>每日收益 <span class="muted small">實際入帳，台北日期</span></h3>
+          <div class="tf-btns" id="earningsRange">
+            <button class="tf" data-days="7">7 天</button>
+            <button class="tf active" data-days="30">30 天</button>
+            <button class="tf" data-days="90">90 天</button>
+            <button class="tf" data-days="0">全部</button>
+          </div>
+        </div>
+        <canvas id="earningsChart"></canvas>
+      </div>
+      <div class="chart-box">
+        <div class="chart-head">
+          <h3>每日實際年化 <span class="muted small">台北日期；利息÷當日資金規模，出入金當天會失真</span></h3>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <div class="tf-btns" id="apyRange">
+              <button class="tf" data-days="7">7 天</button>
+              <button class="tf active" data-days="30">30 天</button>
+              <button class="tf" data-days="90">90 天</button>
+              <button class="tf" data-days="0">全部</button>
+            </div>
             <div class="tf-btns" id="apyFeeToggle">
               <button class="tf active" data-fee="net" title="已扣 15% 手續費，實際入袋">稅後（實拿）</button>
               <button class="tf" data-fee="gross" title="還原成市場掛單利率，方便跟別人/市場 K 線比較">稅前（對照市場）</button>
@@ -157,6 +176,6 @@
 <footer class="muted small">資料僅供參考，放貸有風險。市場數據：Bitfinex 公開 API｜個人數據：Supabase</footer>
 
 <script src="config.js"></script>
-<script src="app.js?v=20260821a"></script>
+<script src="app.js?v=20261009b"></script>
 </body>
 </html>

@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import math
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -89,6 +91,18 @@ def long_term_exposure_with_reserve(available: float, wallet_balance: float,
     known_offers = sum(o.amount for o in offers)
     unidentified = max(0.0, reserved - known_offers)
     return long_known + unidentified, unidentified
+
+
+def lending_exposure(available: float, wallet_balance: float | None,
+                     offers: list[Offer], credits: list[Credit]) -> float:
+    """總承諾本金：放貸＋掛單；錢包已預留但 API 尚未列出的金額也算入。
+
+    三個 API 的讀取非原子操作，成交中可能兩桶都出現或兩桶都暫缺。
+    取已知本金與錢包預留的較大值，寧可少掛，不能因漏資料重複用額度。
+    """
+    known = sum(c.amount for c in credits) + sum(o.amount for o in offers)
+    reserved = max(0.0, wallet_balance - available) if wallet_balance is not None else 0.0
+    return max(known, reserved)
 
 
 # 舊名稱保留，避免外部引用中斷。
@@ -215,6 +229,8 @@ class Engine:
         self.store = store
         self.tg = tg
         self.scfg = cfg.strategy
+        # Telegram polling 與主循環在不同執行緒；查額度到送單必須串行。
+        self._funding_lock = threading.RLock()
 
         self.paused = False
         self.last_earnings_sync = 0.0
@@ -286,9 +302,17 @@ class Engine:
     # ════════ 單一幣別處理 ════════
 
     def _process_symbol(self, sym: str, st: SymbolState):
+        with self._funding_lock:
+            self._process_symbol_locked(sym, st)
+
+    def _process_symbol_locked(self, sym: str, st: SymbolState):
         now_mts = int(time.time() * 1000)
         ts = now_iso()
         currency = sym[1:]
+        capped_state = None
+        if not self.paused and self.cfg.lending_limit(sym) is not None:
+            # 降額撤單不依賴行情，公開 API 暫時故障也不能讓超額掛單繼續留著。
+            capped_state = self._enforce_lending_limit(sym, st, ts)
 
         # 1) 市場數據與分析（含 24 小時 1h K 線做錨點保底）
         ticker = self.client.funding_ticker(sym)
@@ -322,7 +346,9 @@ class Engine:
 
         # 3) 帳戶狀態
         wallet_balance = None  # funding 錢包權威總額（real/observe 模式才有；模擬模式用 None → 網頁退回三塊相加）
-        if st.sim is not None:
+        if capped_state is not None:
+            wallet_balance, available, offers, credits = capped_state
+        elif st.sim is not None:
             available, offers, credits = st.sim.balance, list(st.sim.offers), list(st.sim.credits)
         else:
             wallet_balance, available = self.client.funding_wallet(currency)
@@ -346,6 +372,9 @@ class Engine:
                 available = self.client.funding_available(currency)
             elif st.sim is not None:
                 available = st.sim.balance
+            if self.cfg.lending_limit(sym) is not None:
+                # 撤單可能已成交；重讀 credits/loans 和預留資金後才可使用新額度。
+                wallet_balance, available, offers, credits = self._enforce_lending_limit(sym, st, ts)
             available = self._maybe_place_frr(sym, st, available, view, now_mts, ts,
                                               offers, credits, wallet_balance)
             self._place_ladder(sym, st, available, view, now_mts, ts,
@@ -368,6 +397,62 @@ class Engine:
             except BfxError as e:
                 log.warning("%s 重讀帳戶快照失敗（用本輪稍早數值）: %s", sym, e)
         self._save_status(sym, view, available, credits, offers, ts, wallet_balance)
+
+    def _funding_state(self, sym: str, st: SymbolState) -> tuple[float, float, list[Offer], list[Credit]]:
+        """取得目前本金；讀取失敗向上拋出，禁止用未知餘額送單。"""
+        if st.sim is not None:
+            offers, credits = list(st.sim.offers), list(st.sim.credits)
+            available = st.sim.balance
+            wallet = available + sum(o.amount for o in offers) + sum(c.amount for c in credits)
+        else:
+            wallet, available = self.client.funding_wallet(sym[1:])
+            offers = self.client.active_offers(sym)
+            credits = merge_funding_positions(self.client.active_credits(sym),
+                                              self.client.active_loans(sym))
+        return wallet, available, offers, credits
+
+    def _lending_budget(self, sym: str, available: float, offers: list[Offer],
+                        credits: list[Credit], wallet: float | None) -> float:
+        limit = self.cfg.lending_limit(sym)
+        if limit is None:
+            return max(0.0, available)
+        room = max(0.0, limit - lending_exposure(available, wallet, offers, credits))
+        return floor2(max(0.0, min(available, room)))
+
+    def _enforce_lending_limit(self, sym: str, st: SymbolState, ts: str):
+        """降額只撤超額掛單，已放貸本金等待自然還款；優先撤最新單保留排隊。"""
+        limit = self.cfg.lending_limit(sym)
+        state = self._funding_state(sym, st)
+        if limit is None:
+            return state
+        for original in sorted(state[2], key=lambda o: o.mts_created, reverse=True):
+            wallet, available, offers, credits = state
+            if lending_exposure(available, wallet, offers, credits) <= limit + 1e-8:
+                break
+            offer = next((o for o in offers if o.id == original.id), None)
+            if offer is None:
+                continue
+            detail = {"symbol": sym, "id": offer.id, "amount": offer.amount,
+                      "rate": offer.rate, "frr": is_frr_offer(offer),
+                      "reason": "lending_limit", "lending_max": limit}
+            if self.dry_run and st.sim is None:
+                if offer.id not in st.announced_cancels:
+                    st.announced_cancels.add(offer.id)
+                    self.store.log_action("cancel(dry)", detail, ts)
+                continue
+            try:
+                if st.sim is not None:
+                    st.sim.cancel(offer.id)
+                else:
+                    self.client.cancel_offer(offer.id)
+                self.store.log_action("cancel(sim)" if st.sim is not None else "cancel", detail, ts)
+                log.info("%s 總放貸上限 %.2f：撤回掛單 #%s（%.2f）",
+                         sym, limit, offer.id, offer.amount)
+            except BfxError as e:
+                log.warning("%s 降額撤單失敗 #%s: %s", sym, offer.id, e)
+            # 成功或失敗都重讀：掛單可能已成交；失敗不能當成釋放額度。
+            state = self._funding_state(sym, st)
+        return state
 
     def _track_credits(self, sym: str, st: SymbolState, credits: list[Credit],
                        now_mts: int, frr: float = 0.0) -> list[str]:
@@ -513,8 +598,9 @@ class Engine:
                 "min_offer_usd", self.scfg.get("min_offer_usd", 150))):
             log.warning("%s 有 %.2f 資金已預留但 active offers 未回傳；計入120天曝險，暫停加碼",
                         sym, unidentified)
-        plan = frr_pilot_plan(available, exposure, total, view, self.scfg,
-                              allow_fixed_fallback=st.long_fixed_fallback)
+        budget = self._lending_budget(sym, available, offers, credits, wallet_balance)
+        plan = frr_pilot_plan(budget, exposure, total, view, self.scfg,
+                              allow_fixed_fallback=st.long_fixed_fallback, symbol=sym)
         if plan is None:
             return available
         is_frr = plan.offer_type != "LIMIT"
@@ -525,12 +611,16 @@ class Engine:
         if self.dry_run:
             log.info("[觀察] %s 120天試點會掛：%s", sym, desc)
             self.store.log_action("submit(dry)", detail, ts)
+            if self.cfg.lending_limit(sym) is not None:
+                offers.append(Offer(id=-1, symbol=sym, mts_created=now_mts,
+                                    amount=plan.amount, rate=plan.rate, period=plan.period))
+                return max(0.0, available - plan.amount)
             return available
         try:
             self.client.submit_offer(sym, plan.amount, plan.rate, plan.period,
                                      offer_type=plan.offer_type)
             st.long_fixed_fallback = False
-            cap = long_term_exposure_cap(total, self.scfg)
+            cap = long_term_exposure_cap(total, self.scfg, sym)
             log.info("%s 120天試點掛單：%s（長單曝險 %.2f/%.2f）", sym, desc,
                      exposure + plan.amount, cap)
             self.store.log_action("submit", detail, ts)
@@ -542,19 +632,23 @@ class Engine:
                     f"曝險：{exposure + plan.amount:,.2f} / 上限 {cap:,.2f}\n"
                     f"（{int(float(self.scfg['frr_pilot'].get('timeout_minutes', 1440)) / 60)} "
                     f"小時內未成交會自動撤回）")
+            # 本輪新單尚未必出現在 API；本地保留它，避免階梯重複用總額度。
+            if self.cfg.lending_limit(sym) is not None:
+                offers.append(Offer(id=-1, symbol=sym, mts_created=now_mts,
+                                    amount=plan.amount, rate=plan.rate, period=plan.period))
             return max(0.0, available - plan.amount)
         except BfxError as e:
             log.warning("%s FRR 試點掛單失敗 %s: %s", sym, desc, e)
             return available
 
-    def _place_ladder(self, sym: str, st: SymbolState, available: float,
-                      view: MarketView, now_mts: int, ts: str,
+    def _ladder_plans(self, sym: str, available: float, view: MarketView,
                       offers: list[Offer], credits: list[Credit],
-                      wallet_balance: float | None):
-        plans = build_ladder(available, view, self.scfg)
+                      wallet_balance: float | None, buffer: float = 0.0):
+        budget = self._lending_budget(sym, available, offers, credits, wallet_balance)
+        plans = build_ladder(max(0.0, budget - buffer), view, self.scfg)
         total = wallet_balance or (available + sum(c.amount for c in credits))
         exposure, _ = long_term_exposure_with_reserve(available, total, offers, credits)
-        long_room = max(0.0, long_term_exposure_cap(total, self.scfg) - exposure)
+        long_room = max(0.0, long_term_exposure_cap(total, self.scfg, sym) - exposure)
         min_offer = float(self.scfg.get("min_offer_usd", 150))
         capped_plans = []
         for plan in plans:
@@ -566,7 +660,13 @@ class Engine:
                 capped_plans.append(OfferPlan(amount=floor2(amount), rate=plan.rate,
                                                period=plan.period))
                 long_room -= amount
-        plans = capped_plans
+        return capped_plans
+
+    def _place_ladder(self, sym: str, st: SymbolState, available: float,
+                      view: MarketView, now_mts: int, ts: str,
+                      offers: list[Offer], credits: list[Credit],
+                      wallet_balance: float | None):
+        plans = self._ladder_plans(sym, available, view, offers, credits, wallet_balance)
         st.last_plans = plans
         for p in plans:
             desc = f"{p.amount:,.2f} @ {fmt_apy(p.rate)} / {p.period}天"
@@ -988,7 +1088,7 @@ class Engine:
                 "/review 昨日策略檢討\n"
                 "/learning 子帳戶 USD／USDT 持倉（唯讀）\n"
                 "/capital 立刻偵測入金/出金/兌換並更新\n"
-                "/longcap [金額] 查詢／暫時修改每幣別所有120天硬上限\n"
+                "/longcap [USD／USDT] [金額] 查詢／暫時修改120天上限\n"
                 "/go 立刻執行最新建議掛單（觀察模式也會真的下單）\n"
                 "/lend 手動掛單，格式：/lend fUSD 250 11.5 7\n"
                 "　　　（幣別 金額 年化% 天期）\n"
@@ -996,25 +1096,52 @@ class Engine:
         })
 
     def _cmd_frrcap(self, args: str = "") -> str:
+        with self._funding_lock:
+            return self._cmd_frrcap_locked(args)
+
+    def _cmd_frrcap_locked(self, args: str = "") -> str:
         """查詢或暫時修改每幣別所有 120 天部位上限；/frrcap 為舊別名。"""
         pilot = self.scfg.get("frr_pilot") or {}
-        current = long_term_exposure_cap(0, self.scfg)
         if not args.strip():
-            return (f"📏 120天部位每幣別硬上限：{current:,.2f}\n"
-                    "包含 FRR＋固定利率掛單／放貸；修改：/longcap 1000")
+            return (f"📏 120天部位上限：USD {long_term_exposure_cap(0, self.scfg, 'fUSD'):,.2f}"
+                    f"｜USDT {long_term_exposure_cap(0, self.scfg, 'fUST'):,.2f}\n"
+                    "包含 FRR＋固定利率掛單／放貸；修改：/longcap USD 1000 或 /longcap USDT 500\n"
+                    "/longcap 1000 同時修改兩幣別；0 停止新增120天部位")
+        parts = args.split()
+        symbol = None
+        if len(parts) == 2:
+            symbol = {"USD": "fUSD", "FUSD": "fUSD", "USDT": "fUST",
+                      "UST": "fUST", "FUST": "fUST"}.get(parts[0].upper())
+            if symbol is None:
+                return "格式：/longcap USD 1000 或 /longcap USDT 500"
+        elif len(parts) != 1:
+            return "格式：/longcap USD 1000 或 /longcap USDT 500"
         try:
-            amount = float(args.strip())
+            amount = float(parts[-1])
         except ValueError:
-            return "格式：/longcap 1000（金額需為數字）"
+            return "格式：/longcap USD 1000（金額需為數字）"
+        if not math.isfinite(amount) or amount < 0:
+            return "❌ 上限必須是有限的非負金額"
         minimum = float(pilot.get("min_offer_usd", self.scfg.get("min_offer_usd", 150)))
-        if amount < minimum:
-            return f"❌ 上限不可低於最小掛單額 {minimum:,.2f}；若要停止 FRR，請在 Zeabur 關閉 pilot"
-        pilot["long_term_max_amount"] = amount
+        if 0 < amount < minimum:
+            return f"❌ 上限不可低於最小掛單額 {minimum:,.2f}；0 可停止新增120天部位"
+        if symbol is None:
+            pilot["long_term_max_amount"] = amount
+            pilot["long_term_max_amounts"] = {}
+        else:
+            caps = dict(pilot.get("long_term_max_amounts") or {})
+            caps[symbol] = amount
+            pilot["long_term_max_amounts"] = caps
         self.scfg["frr_pilot"] = pilot
-        return (f"✅ 所有120天部位每幣別硬上限暫時改為 {amount:,.2f}\n"
-                "已成交／已掛部位不會被強制撤回；重啟後回到 LONG_TERM_MAX_AMOUNT/config.yaml")
+        target = "每幣別" if symbol is None else ("USD" if symbol == "fUSD" else "USDT")
+        return (f"✅ 所有120天部位{target}硬上限暫時改為 {amount:,.2f}\n"
+                "已成交／已掛部位不會被強制撤回；重啟後回到 Zeabur LONG_TERM_MAX_*／config.yaml")
 
     def _cmd_go(self) -> str:
+        with self._funding_lock:
+            return self._cmd_go_locked()
+
+    def _cmd_go_locked(self) -> str:
         """以「當下」的餘額與最新市場重算建議並真的送出（觀察模式也執行）。
 
         不直接用上一輪算好的計畫：按下 /go 的瞬間餘額可能已經變了
@@ -1028,11 +1155,11 @@ class Engine:
             if view is None:
                 continue
             try:
-                available = self.client.funding_available(sym[1:])
+                wallet, available, offers, credits = self._funding_state(sym, st)
             except BfxError as e:
                 results.append(f"❌ {sym} 查餘額失敗：{e}")
                 continue
-            plans = build_ladder(max(0.0, available - 0.05), view, self.scfg)
+            plans = self._ladder_plans(sym, available, view, offers, credits, wallet, buffer=0.05)
             st.last_plans = []
             for p in plans:
                 try:
@@ -1044,10 +1171,14 @@ class Engine:
                 except BfxError as e:
                     results.append(f"❌ {sym} {p.amount:,.2f}：{e}")
         if not results:
-            return "目前兩個幣別的可用資金都不足 $150，沒有可掛的單"
+            return "目前可用資金或放貸上限剩餘額度不足最小掛單額，沒有可掛的單"
         return "📌 已執行掛單（依當下餘額與行情重算）：\n" + "\n".join(results)
 
     def _cmd_lend(self, args: str = "") -> str:
+        with self._funding_lock:
+            return self._cmd_lend_locked(args)
+
+    def _cmd_lend_locked(self, args: str = "") -> str:
         """手動掛單：/lend fUSD 250 11.5 7（幣別 金額 年化% 天期）"""
         if not self.has_auth:
             return "❌ 沒有 API key，無法下單"
@@ -1061,7 +1192,19 @@ class Engine:
             return "格式：/lend fUSD 250 11.5 7（幣別 金額 年化% 天期）"
         if sym not in self.cfg.symbols:
             return f"幣別要是 {self.cfg.symbols} 其中之一"
+        if not math.isfinite(amount) or amount <= 0:
+            return "❌ 金額必須是有限的正數"
         try:
+            if self.cfg.lending_limit(sym) is not None or period >= 120:
+                wallet, available, offers, credits = self._funding_state(sym, self.states[sym])
+                budget = self._lending_budget(sym, available, offers, credits, wallet)
+                if amount > budget:
+                    return f"❌ 超過總放貸上限或可用餘額；{sym} 最多可新增 {budget:,.2f}"
+                if period >= 120:
+                    exposure, _ = long_term_exposure_with_reserve(available, wallet, offers, credits)
+                    room = max(0.0, long_term_exposure_cap(wallet, self.scfg, sym) - exposure)
+                    if amount > floor2(room):
+                        return f"❌ 超過120天上限；{sym} 最多可新增120天本金 {floor2(room):,.2f}"
             self.client.submit_offer(sym, amount, rate, period)
             self.store.log_action("submit(manual)", {
                 "symbol": sym, "amount": amount, "rate": rate, "period": period}, now_iso())
@@ -1072,23 +1215,28 @@ class Engine:
     def _status_text(self) -> str:
         lines = [f"🤖 {self.mode_name}{'（已暫停）' if self.paused else ''}"]
         for sym, st in self.states.items():
-            currency = sym[1:]
-            if st.sim is not None:
-                total = sum(c.amount for c in st.sim.credits)
-                lines.append(f"{sym}｜模擬餘額 {st.sim.balance:,.2f}｜放貸中 {total:,.2f}"
-                             f"（{len(st.sim.credits)} 筆）｜掛單 {len(st.sim.offers)} 筆")
-            else:
-                try:
-                    available = self.client.funding_available(currency)
-                    credits = merge_funding_positions(
-                        self.client.active_credits(sym), self.client.active_loans(sym))
-                    offers = self.client.active_offers(sym)
-                    total = sum(c.amount for c in credits)
-                    wrate = (sum(c.amount * c.rate for c in credits) / total) if total else 0
+            limit = self.cfg.lending_limit(sym)
+            if limit is not None:
+                lines.append(f"📏 {sym} 總放貸上限 {limit:,.2f}（放貸＋掛單；超額本金等待還款）")
+            lines.append(f"📏 {sym} 120天上限 {long_term_exposure_cap(0, self.scfg, sym):,.2f}")
+            try:
+                wallet, available, offers, credits = self._funding_state(sym, st)
+                total = sum(c.amount for c in credits)
+                if st.sim is not None:
+                    lines.append(f"{sym}｜模擬餘額 {available:,.2f}｜放貸中 {total:,.2f}"
+                                 f"（{len(credits)} 筆）｜掛單 {len(offers)} 筆")
+                else:
+                    frr = st.last_view.frr if st.last_view else 0.0
+                    wrate = (sum(c.amount * effective_rate(c.rate, frr) for c in credits) / total) if total else 0
                     lines.append(f"{sym}｜可用 {available:,.2f}｜放貸中 {total:,.2f}"
                                  f"（{len(credits)} 筆，年化 {fmt_apy(wrate)}）｜掛單 {len(offers)} 筆")
-                except BfxError as e:
-                    lines.append(f"{sym}｜帳戶查詢失敗：{e}")
+                if limit is not None:
+                    exposure = lending_exposure(available, wallet, offers, credits)
+                    budget = self._lending_budget(sym, available, offers, credits, wallet)
+                    lines.append(f"　└ 已承諾 {exposure:,.2f}｜總額度最多可新增 {budget:,.2f}"
+                                 f"｜可用中保留 {max(0.0, available - budget):,.2f}")
+            except BfxError as e:
+                lines.append(f"{sym}｜帳戶查詢失敗：{e}")
             if st.last_view:
                 lines.append(f"　└ 市場錨點 {fmt_apy(st.last_view.anchor)}")
         lines.append(f"循環數：{self.cycle_count}")

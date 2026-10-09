@@ -49,6 +49,29 @@ const estApy = (s) => {
   return w ? netApy((s.total_lent || 0) * (s.weighted_apy || 0)) / w : 0;
 };
 
+// 後端以台北日期儲存收益；近 N 天包含今天及前 N-1 個台北日期。
+function earningsInRange(rows, days, now = Date.now()) {
+  const today = new Date(now + 8 * 3600000).toISOString().slice(0, 10);
+  const cutoff = days
+    ? new Date(Date.parse(today + "T00:00:00Z") - (days - 1) * 86400000).toISOString().slice(0, 10)
+    : "0000-00-00";
+  return rows.filter((row) => row.date >= cutoff && row.date <= today);
+}
+
+function renderFundsSummary(statuses) {
+  const sum = (f) => statuses.reduce((a, s) => a + (f(s) || 0), 0);
+  const lent = sum((s) => s.total_lent);
+  const wallet = sum(walletTotal);
+  const money = (amount) => "$" + amount.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  $("dWallet").textContent = money(wallet);
+  $("dLent").textContent = money(lent);
+  $("dOffered").textContent = money(sum(offersTotal));
+  $("dAvailable").textContent = money(sum((s) => s.available));
+  $("dUtilization").textContent = wallet ? `放貸利用率 ${(lent / wallet * 100).toFixed(1)}%` : "放貸利用率 —";
+  const estimated = wallet ? netApy(sum((s) => (s.total_lent || 0) * (s.weighted_apy || 0))) / wallet : 0;
+  $("dEstApy").textContent = pct(estimated);
+}
+
 // 剩餘時間：用開始時間 + 天期 推算到期點，前端即時換算成 天/時/分（比後端 X.X 天好懂）
 function fmtRemaining(openedIso, period) {
   if (!openedIso || !period) return "—";
@@ -531,20 +554,10 @@ function renderDashboard(d) {
       : `🔴 已 ${Math.round(age)} 分鐘沒回報（最後 ${clock}），機器人可能停了`;
   }
 
-  // 總覽卡片：USD 與 UST 都是美元穩定幣，直接加總顯示（明細與其餘指標移到下方幣別明細表）
-  const sum = (f) => statuses.reduce((a, s) => a + (f(s) || 0), 0);
-  const totalLent = sum((s) => s.total_lent);
-  const grandWallet = sum(walletTotal);
-  const grandEstApy = grandWallet
-    ? netApy(statuses.reduce((a, s) => a + (s.total_lent || 0) * (s.weighted_apy || 0), 0)) / grandWallet
-    : 0;
-  $("dWallet").textContent = "$" + grandWallet.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  $("dLent").textContent = "$" + totalLent.toLocaleString();
-  $("dEstApy").textContent = pct(grandEstApy);
+  renderFundsSummary(statuses);
 
   const earnings = normalizedEarnings(d);
-  const cutoff30 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-  const total30 = earnings.filter((e) => e.date >= cutoff30)
+  const total30 = earningsInRange(earnings, 30)
     .reduce((a, e) => a + (e.amount || 0), 0);
   $("dEarn30").textContent = "$" + total30.toFixed(2);
 
@@ -757,7 +770,16 @@ function renderSymbolTable(statuses) {
   tbody.innerHTML = rows + total;
 }
 
+let earningsHistory = [];
+let earningsRangeDays = 30;
+
 function drawEarningsChart(earnings) {
+  earningsHistory = earnings || [];
+  renderEarningsChart();
+}
+
+function renderEarningsChart() {
+  const earnings = earningsInRange(earningsHistory, earningsRangeDays);
   const dates = [...new Set(earnings.map((e) => e.date))].sort();
   const keys = [...new Set(earnings.map(seriesKey))];
   const datasets = keys.map((key) => {
@@ -772,7 +794,7 @@ function drawEarningsChart(earnings) {
   earningsChart?.destroy();
   earningsChart = new Chart($("earningsChart"), {
     type: "bar",
-    data: { labels: dates.map((d) => d.slice(5)), datasets },
+    data: { labels: dates.map((d) => earningsRangeDays ? d.slice(5) : d), datasets },
     options: {
       interaction: { mode: "index", intersect: false },
       plugins: {
@@ -785,7 +807,7 @@ function drawEarningsChart(earnings) {
           },
         },
       },
-      scales: { x: { stacked: true }, y: { stacked: true } },
+      scales: { x: { stacked: true, ticks: { maxTicksLimit: 8 } }, y: { stacked: true } },
     },
   });
 }
@@ -795,6 +817,7 @@ let dailyApyChart;
 let apyEarnings = [];      // 後端給的每日收益（amount 為稅後實際入帳）
 let apyFeeMode = "net";    // net=稅後實拿（預設）；gross=稅前（÷0.85 還原，對照市場掛單利率）
 let apyViewMode = "combined"; // combined=合計加權年化；split=各幣別分開
+let apyRangeDays = 30;
 
 function drawDailyApyChart(earnings) {
   apyEarnings = earnings || [];
@@ -805,7 +828,7 @@ function renderDailyApyChart() {
   // 每日實際年化 = 當日利息 ÷（當日入帳後錢包餘額 - 當日利息）× 365
   // 餘額含放貸中的錢，是不錯的資金規模近似；出入金當天分母會跳動 → 該日數據失真
   // amount 來自 ledger（已扣 15% 手續費的實際入帳）；稅前模式 ÷0.85 還原成市場掛單利率口徑
-  const earnings = apyEarnings;
+  const earnings = earningsInRange(apyEarnings, apyRangeDays);
   const feeFactor = apyFeeMode === "gross" ? 1 / NET : 1;
   const dates = [...new Set(earnings.map((e) => e.date))].sort();
   const keys = [...new Set(earnings.map(seriesKey))];
@@ -844,10 +867,13 @@ function renderDailyApyChart() {
   dailyApyChart?.destroy();
   dailyApyChart = new Chart($("dailyApyChart"), {
     type: "line",
-    data: { labels: dates.map((d) => d.slice(5)), datasets },
+    data: { labels: dates.map((d) => apyRangeDays ? d.slice(5) : d), datasets },
     options: {
       plugins: { legend: { display: apyViewMode === "split" && keys.length > 1 } },
-      scales: { y: { ticks: { callback: (v) => v.toFixed(1) + "%" } } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 8 } },
+        y: { ticks: { callback: (v) => v.toFixed(1) + "%" } },
+      },
     },
   });
 }
@@ -913,7 +939,7 @@ function renderWalletTrendChart() {
     options: {
       interaction: { mode: "index", intersect: false },
       plugins: {
-        legend: { display: walletTrendMode === "split" && currencies.length > 1 },
+        legend: { display: walletTrendMode === "split" && keys.length > 1 },
         tooltip: {
           callbacks: {
             label: (ctx) => `${ctx.dataset.label}：$${(ctx.parsed.y || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
@@ -1090,7 +1116,24 @@ document.querySelectorAll("#anchorRange .tf").forEach((btn) =>
     renderAnchorChart();
   }));
 
-// 每日實際年化的稅前/稅後切換（單選，純前端 ÷0.85 換算）
+// 每日收益／年化的時間範圍（單選，沿用已取得的資料）。
+document.querySelectorAll("#earningsRange .tf").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#earningsRange .tf").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    earningsRangeDays = Number(btn.dataset.days);
+    renderEarningsChart();
+  }));
+
+document.querySelectorAll("#apyRange .tf").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#apyRange .tf").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    apyRangeDays = Number(btn.dataset.days);
+    renderDailyApyChart();
+  }));
+
+// 切換費用口徑時保留目前時間範圍。
 document.querySelectorAll("#apyFeeToggle .tf").forEach((btn) =>
   btn.addEventListener("click", () => {
     document.querySelectorAll("#apyFeeToggle .tf").forEach((b) => b.classList.remove("active"));

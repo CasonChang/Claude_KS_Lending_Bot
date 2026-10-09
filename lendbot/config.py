@@ -1,4 +1,5 @@
 """設定載入：config.yaml（策略參數）+ .env（金鑰）。"""
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,8 @@ class Env:
     bfx_key: str = ""
     bfx_secret: str = ""
     dry_run: bool = True
+    lending_max_usd: float | None = None
+    lending_max_usdt: float | None = None
     tg_token: str = ""
     tg_chat_id: str = ""
     supabase_url: str = ""
@@ -85,6 +88,24 @@ class Config:
     def simulated_balance(self) -> float:
         return float(self.raw.get("dry_run", {}).get("simulated_balance", 1000))
 
+    def lending_limit(self, symbol: str) -> float | None:
+        # Bitfinex 把 USDT 的 funding symbol 命名為 fUST。
+        return {"fUSD": self.env.lending_max_usd,
+                "fUST": self.env.lending_max_usdt}.get(symbol)
+
+
+def _amount_env(name: str) -> float | None:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return None
+    try:
+        amount = float(value)
+    except ValueError:
+        raise ValueError(f"{name} 必須是有限的非負金額；留白表示使用預設行為") from None
+    if not math.isfinite(amount) or amount < 0:
+        raise ValueError(f"{name} 必須是有限的非負金額；留白表示使用預設行為")
+    return amount
+
 
 def load_config(config_path: Path | None = None) -> Config:
     load_dotenv(ROOT / ".env")
@@ -97,15 +118,25 @@ def load_config(config_path: Path | None = None) -> Config:
     raw = dict(raw or {})
     raw["strategy"] = dict(raw.get("strategy") or {})
     raw["strategy"]["frr_pilot"] = dict(raw["strategy"].get("frr_pilot") or {})
-    long_max = (os.getenv("LONG_TERM_MAX_AMOUNT", "").strip()
-                or os.getenv("FRR_MAX_AMOUNT", "").strip())  # 舊 Zeabur 變數相容
-    if long_max:
-        raw["strategy"]["frr_pilot"]["long_term_max_amount"] = float(long_max)
+    long_max = _amount_env("LONG_TERM_MAX_AMOUNT")
+    if long_max is None:
+        long_max = _amount_env("FRR_MAX_AMOUNT")  # 舊 Zeabur 變數相容
+    pilot = raw["strategy"]["frr_pilot"]
+    if long_max is not None:
+        pilot["long_term_max_amount"] = long_max
+    caps = dict(pilot.get("long_term_max_amounts") or {})
+    for symbol, name in [("fUSD", "LONG_TERM_MAX_USD"), ("fUST", "LONG_TERM_MAX_USDT")]:
+        amount = _amount_env(name)
+        if amount is not None:
+            caps[symbol] = amount
+    pilot["long_term_max_amounts"] = caps
 
     env = Env(
         bfx_key=os.getenv("BFX_API_KEY", "").strip(),
         bfx_secret=os.getenv("BFX_API_SECRET", "").strip(),
         dry_run=os.getenv("DRY_RUN", "true").strip().lower() != "false",
+        lending_max_usd=_amount_env("LENDING_MAX_USD"),
+        lending_max_usdt=_amount_env("LENDING_MAX_USDT"),
         tg_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
         tg_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
         supabase_url=os.getenv("SUPABASE_URL", "").strip().rstrip("/"),

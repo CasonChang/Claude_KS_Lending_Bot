@@ -1,3 +1,5 @@
+import threading
+
 from lendbot.bfx_client import Credit, Offer
 from lendbot.engine import (Engine, format_learning_positions, frr_exposure_with_reserve,
                             merge_funding_positions)
@@ -31,6 +33,7 @@ def test_format_learning_positions_ignores_small_interest_balance():
 
 def test_frrcap_command_updates_runtime_absolute_cap():
     engine = Engine.__new__(Engine)
+    engine._funding_lock = threading.RLock()
     engine.scfg = {"min_offer_usd": 150, "frr_pilot": {"long_term_max_amount": 1000}}
 
     assert "1,000.00" in engine._cmd_frrcap("")

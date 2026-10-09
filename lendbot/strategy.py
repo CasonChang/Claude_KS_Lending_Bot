@@ -204,7 +204,7 @@ def effective_rate(rate: float, frr: float) -> float:
 
 def frr_pilot_plan(available: float, frr_exposure: float, total_capital: float,
                    view: MarketView, scfg: dict,
-                   allow_fixed_fallback: bool = False) -> FrrPlan | None:
+                   allow_fixed_fallback: bool = False, symbol: str | None = None) -> FrrPlan | None:
     """需求觸發時，把當下可用資金撥一筆去掛浮動 FRR。額度用滿或沒觸發就回 None。
 
     觸發（任一）：(a) spike 偵測；(b) 近期最高成交 ≥ FRR × trigger_near_frr。
@@ -224,7 +224,7 @@ def frr_pilot_plan(available: float, frr_exposure: float, total_capital: float,
         view.frr > 0 and view.recent_high >= view.frr * near) or fixed_attractive
     if not triggered:
         return None
-    room = long_term_exposure_cap(total_capital, scfg) - frr_exposure
+    room = long_term_exposure_cap(total_capital, scfg, symbol) - frr_exposure
     min_offer = float(pcfg.get("min_offer_usd", scfg.get("min_offer_usd", 150)))
     amount = min(available, room)
     if amount < min_offer:
@@ -237,13 +237,16 @@ def frr_pilot_plan(available: float, frr_exposure: float, total_capital: float,
     return FrrPlan(amount=floor2(amount), period=int(pcfg.get("period_days", 120)))
 
 
-def long_term_exposure_cap(total_capital: float, scfg: dict) -> float:
+def long_term_exposure_cap(total_capital: float, scfg: dict, symbol: str | None = None) -> float:
     """回傳單一幣別所有 120 天掛單＋放貸的金額上限。
 
-    ``long_term_max_amount`` 是所有 120 天 FRR／固定部位的共同硬上限；保留舊欄位
+    ``long_term_max_amounts`` 可分幣別覆寫，``long_term_max_amount`` 為共用預設；保留舊欄位
     fallback，讓既有部署升級時不會突然停擺。固定上限不隨入金／提幣改變。
     """
     pcfg = scfg.get("frr_pilot") or {}
+    caps = pcfg.get("long_term_max_amounts") or {}
+    if symbol in caps:
+        return max(0.0, float(caps[symbol]))
     if "long_term_max_amount" in pcfg:
         return max(0.0, float(pcfg["long_term_max_amount"]))
     if "max_amount" in pcfg:  # 2026-08-20 舊設定相容
