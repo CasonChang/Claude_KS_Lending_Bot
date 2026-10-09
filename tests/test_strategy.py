@@ -166,10 +166,40 @@ def test_ladder_below_minimum():
 
 
 def test_ladder_merges_small_rungs():
-    # 300 USD：50%=150 OK，30%=90 與 20%=60 太小 → 全部往後合併成第二筆
+    # 300 USD：50%=150 OK，30%=90 與 20%=60 太小 → 併入最低檔
     plans = build_ladder(300, view_with(), SCFG)
     assert all(p.amount >= 150 for p in plans)
     assert abs(sum(p.amount for p in plans) - 300) < 0.01
+
+
+def test_small_ladder_preserves_base_rate_and_uses_tail():
+    view = view_with(anchor=0.00015)
+    for balance in [150, 229.60, 300, 500, 500.019, 1000.03]:
+        plans = build_ladder(balance, view, SCFG)
+        assert all(p.amount >= 150 for p in plans)
+        assert round(sum(p.amount for p in plans), 2) == int(balance * 100) / 100
+        assert plans[0].rate == view.anchor
+    assert len(build_ladder(229.60, view, SCFG)) == 1
+    assert len(build_ladder(300, view, SCFG)) == 1
+    assert [p.amount for p in build_ladder(500, view, SCFG)] == [250, 250]
+
+
+def test_long_market_high_does_not_trigger_short_ladder_but_can_trigger_pilot():
+    trades = make_trades(0.00015, n=30) + [
+        FundingTrade(mts=NOW - 60_000, amount=9000, rate=0.0003, period=60),
+        FundingTrade(mts=NOW - 60_000, amount=9000, rate=0.0003, period=120),
+    ]
+    view = analyze_market(make_ticker(), make_book(), trades, SCFG, NOW)
+    assert not view.spike
+    assert view.recent_high == 0.00015
+    assert view.long_recent_high == 0.0003
+    assert frr_pilot_plan(1000, 0, 10000, view, FRR_SCFG) is not None
+
+
+def test_missing_short_trades_never_fabricates_short_spike():
+    trades = [FundingTrade(mts=NOW, amount=1000, rate=0.0008, period=120)]
+    view = analyze_market(make_ticker(), make_book(), trades, SCFG, NOW)
+    assert not view.spike and view.recent_high == 0
 
 
 def test_ladder_spike_chases_recent_high():

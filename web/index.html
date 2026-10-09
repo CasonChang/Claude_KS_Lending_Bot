@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Bitfinex 放貸 Dashboard</title>
-<link rel="stylesheet" href="style.css?v=20260821a">
+<link rel="stylesheet" href="style.css?v=20261009c">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -18,6 +18,19 @@
 <!-- ═══ 市場數據（公開，fUSD 與 fUST 並列）═══ -->
 <section>
   <h2>📈 市場放貸數據 <span class="muted small">Bitfinex 公開 WebSocket 即時推送</span></h2>
+  <div class="chart-box">
+    <div class="chart-head">
+      <h3>機器人錨點年化（稅前）</h3>
+      <div class="tf-btns" id="anchorRange">
+        <button class="tf" data-days="1">1 天</button>
+        <button class="tf active" data-days="3">3 天</button>
+        <button class="tf" data-days="7">7 天</button>
+      </div>
+    </div>
+    <p class="muted small">階梯掛單的基準利率，由市場成交、掛單深度與行情保底計算；不代表帳戶實際報酬。</p>
+    <p class="muted small" id="anchorStatus">讀取公開市場錨點…</p>
+    <canvas id="anchorChart"></canvas>
+  </div>
   <div id="marketSections"><!-- JS 依 SYMBOLS 動態建立各幣別區塊 --></div>
 </section>
 
@@ -123,17 +136,6 @@
         </div>
         <canvas id="dailyApyChart"></canvas>
       </div>
-      <div class="chart-box">
-        <div class="chart-head">
-          <h3>機器人錨點年化</h3>
-          <div class="tf-btns" id="anchorRange">
-            <button class="tf" data-days="1">1 天</button>
-            <button class="tf active" data-days="3">3 天</button>
-            <button class="tf" data-days="7">7 天</button>
-          </div>
-        </div>
-        <canvas id="anchorChart"></canvas>
-      </div>
     </div>
     <div class="chart-box">
       <h3>目前掛單</h3>
@@ -176,6 +178,6 @@
 <footer class="muted small">資料僅供參考，放貸有風險。市場數據：Bitfinex 公開 API｜個人數據：Supabase</footer>
 
 <script src="config.js"></script>
-<script src="app.js?v=20261009b"></script>
+<script src="app.js?v=20261009c"></script>
 </body>
 </html>

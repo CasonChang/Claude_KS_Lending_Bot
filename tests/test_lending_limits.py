@@ -104,6 +104,108 @@ def process(bot):
     bot._process_symbol("fUSD", bot.states["fUSD"])
 
 
+def batched_engine(client=None):
+    bot = engine(client or FakeClient(wallet=20000), limit=None, frr=True)
+    bot.scfg["frr_pilot"].update(long_term_max_amount=10000, max_offer_amount=1000,
+                                batch_max_amount=1000, batch_window_minutes=30)
+    for st in bot.states.values():
+        st.long_batch_started_mts = 0
+    return bot
+
+
+def test_long_batch_blocks_restart_burst_and_releases_after_window():
+    bot = batched_engine()
+    st = bot.states["fUSD"]
+    assert bot._maybe_place_frr("fUSD", st, 20000, VIEW, 29 * 60_000, "ts", [], [], 20000) == 20000
+    assert bot.client.submitted == []
+    available = bot._maybe_place_frr("fUSD", st, 20000, VIEW, 30 * 60_000, "ts", [], [], 20000)
+    assert available == 19000
+    assert bot.client.submitted[0][1] == 1000
+    assert bot._long_batch_room("fUSD", 59 * 60_000) == 0
+    assert bot._long_batch_room("fUSD", 60 * 60_000) == 1000
+
+
+def test_frr_and_fixed_ladder_share_batch_even_with_unlimited_total_cap():
+    bot = batched_engine()
+    bot.scfg["periods"] = [{"apy": 0, "days": 120}]
+    st = bot.states["fUSD"]
+    offers = []
+    remaining = bot._maybe_place_frr("fUSD", st, 20000, VIEW, 30 * 60_000, "ts", offers, [], 20000)
+    bot._place_ladder("fUSD", st, remaining, VIEW, 30 * 60_000, "ts", offers, [], 20000)
+    assert sum(p[1] for p in bot.client.submitted) == 1000
+    assert len(offers) == 1  # 新 FRR 本地記錄，不能讓固定階梯重複使用曝險空間
+
+
+def test_dry_run_combined_long_plans_respect_batch_without_real_submissions():
+    bot = batched_engine()
+    bot.dry_run = True
+    bot.scfg["periods"] = [{"apy": 0, "days": 120}]
+    st, offers = bot.states["fUSD"], []
+    remaining = bot._maybe_place_frr("fUSD", st, 20000, VIEW, 30 * 60_000, "ts", offers, [], 20000)
+    bot._place_ladder("fUSD", st, remaining, VIEW, 30 * 60_000, "ts", offers, [], 20000)
+    planned = [call.args[1]["amount"] for call in bot.store.log_action.call_args_list]
+    assert sum(planned) == 1000
+    assert bot.client.submitted == []
+    assert st.long_submissions == []  # 觀察提案不會消耗真正送單窗口
+
+
+def test_cancel_and_repayment_do_not_refund_batch_and_coins_are_independent():
+    bot = batched_engine()
+    bot._record_long_submission("fUSD", 700, 120, 30 * 60_000)
+    assert bot._long_batch_room("fUSD", 31 * 60_000) == 300
+    assert bot._long_batch_room("fUST", 31 * 60_000) == 1000
+    bot._record_long_submission("fUSD", 5000, 2, 31 * 60_000)
+    assert bot._long_batch_room("fUSD", 31 * 60_000) == 300
+
+
+def test_uncertain_submission_failure_reserves_batch_against_duplicate_retry():
+    client = FakeClient(wallet=20000)
+    client.submit_offer = Mock(side_effect=BfxError("timeout; acceptance unknown"))
+    bot = batched_engine(client)
+    bot.scfg["periods"] = [{"apy": 0, "days": 120}]
+    st = bot.states["fUSD"]
+    bot._maybe_place_frr("fUSD", st, 20000, VIEW, 30 * 60_000, "ts", [], [], 20000)
+    bot._place_ladder("fUSD", st, 20000, VIEW, 30 * 60_000, "ts", [], [], 20000)
+    assert client.submit_offer.call_count == 1
+    assert bot._long_batch_room("fUSD", 31 * 60_000) == 0
+
+
+def test_uncertain_frr_acceptance_does_not_let_short_ladder_exceed_total_limit():
+    client = FakeClient(wallet=10000, credits=[credit(4000)])
+    bot = batched_engine(client)
+    bot.cfg.env.lending_max_usd = 5000
+    real_submit = client.submit_offer
+    def accepted_but_timed_out(*args, **kwargs):
+        real_submit(*args, **kwargs)
+        raise BfxError("exchange accepted but response timed out")
+    client.submit_offer = accepted_but_timed_out
+    offers, st = [], bot.states["fUSD"]
+    remaining = bot._maybe_place_frr("fUSD", st, 6000, VIEW, 30 * 60_000, "ts", offers, client.credits, 10000)
+    assert remaining == 5000
+    bot._place_ladder("fUSD", st, remaining, VIEW, 30 * 60_000, "ts", offers, client.credits, 10000)
+    assert len(client.submitted) == 1
+    assert sum(o.amount for o in client.offers) + sum(c.amount for c in client.credits) == 5000
+
+
+def test_manual_go_and_lend_share_long_batch(monkeypatch):
+    monkeypatch.setattr("lendbot.engine.time.time", lambda: 1800)
+    bot = batched_engine()
+    bot.scfg["periods"] = [{"apy": 0, "days": 120}]
+    assert "分批額度" in bot._cmd_lend("fUSD 1001 11.5 120")
+    assert "已掛單" in bot._cmd_lend("fUSD 400 11.5 120")
+    bot._cmd_go()
+    assert sum(p[1] for p in bot.client.submitted if p[0] == "fUSD") == 1000
+    assert all(p[1] <= 1000 for p in bot.client.submitted)
+    assert "分批額度" in bot._cmd_lend("fUSD 150 11.5 120")
+
+
+def test_normal_short_ladder_still_lends_during_long_startup_wait():
+    bot = batched_engine()
+    bot._place_ladder("fUSD", bot.states["fUSD"], 20000, VIEW, 0, "ts", [], [], 20000)
+    assert sum(p[1] for p in bot.client.submitted) == 20000
+    assert all(p[2] < 120 for p in bot.client.submitted)
+
+
 def test_withdrawal_waits_for_repayments_without_reinvesting_excess():
     client = FakeClient(credits=[credit(10000)])
     bot = engine(client)

@@ -220,6 +220,8 @@ class SymbolState:
     processed_closed: set[int] = field(default_factory=set)   # 已處理過的結束單 id
     first_hist_sync: bool = True
     long_fixed_fallback: bool = False  # FRR 等滿 timeout 後，下一輪可接受略低固定 120 天 bid
+    long_batch_started_mts: int = field(default_factory=lambda: int(time.time() * 1000))
+    long_submissions: list[tuple[int, float]] = field(default_factory=list)
 
 
 class Engine:
@@ -583,6 +585,27 @@ class Engine:
                 log.warning("%s 撤單失敗 #%s: %s", sym, o.id, e)
         return freed
 
+    def _long_batch_room(self, sym: str, now_mts: int | None = None) -> float:
+        """長貸路徑共用送單額度；重啟等一個窗口，逾時不確定的送單也保留額度。"""
+        pcfg = self.scfg.get("frr_pilot") or {}
+        if "batch_max_amount" not in pcfg:
+            return float("inf")  # 舊設定相容
+        now_mts = int(time.time() * 1000) if now_mts is None else now_mts
+        st = self.states[sym]
+        window = int(float(pcfg.get("batch_window_minutes", 30)) * 60_000)
+        if now_mts < st.long_batch_started_mts + window:
+            return 0.0
+        st.long_submissions = [(ts, amount) for ts, amount in st.long_submissions
+                               if ts > now_mts - window]
+        return max(0.0, float(pcfg["batch_max_amount"])
+                   - sum(amount for _, amount in st.long_submissions))
+
+    def _record_long_submission(self, sym: str, amount: float, period: int,
+                                now_mts: int | None = None):
+        if period >= 120:
+            self.states[sym].long_submissions.append(
+                (int(time.time() * 1000) if now_mts is None else now_mts, amount))
+
     def _maybe_place_frr(self, sym: str, st: SymbolState, available: float,
                          view: MarketView, now_mts: int, ts: str,
                          offers: list[Offer], credits: list[Credit],
@@ -599,6 +622,7 @@ class Engine:
             log.warning("%s 有 %.2f 資金已預留但 active offers 未回傳；計入120天曝險，暫停加碼",
                         sym, unidentified)
         budget = self._lending_budget(sym, available, offers, credits, wallet_balance)
+        budget = min(budget, self._long_batch_room(sym, now_mts))
         plan = frr_pilot_plan(budget, exposure, total, view, self.scfg,
                               allow_fixed_fallback=st.long_fixed_fallback, symbol=sym)
         if plan is None:
@@ -611,12 +635,14 @@ class Engine:
         if self.dry_run:
             log.info("[觀察] %s 120天試點會掛：%s", sym, desc)
             self.store.log_action("submit(dry)", detail, ts)
-            if self.cfg.lending_limit(sym) is not None:
-                offers.append(Offer(id=-1, symbol=sym, mts_created=now_mts,
-                                    amount=plan.amount, rate=plan.rate, period=plan.period))
-                return max(0.0, available - plan.amount)
-            return available
+            offers.append(Offer(id=-1, symbol=sym, mts_created=now_mts,
+                                amount=plan.amount, rate=plan.rate, period=plan.period))
+            return max(0.0, available - plan.amount)
         try:
+            self._record_long_submission(sym, plan.amount, plan.period, now_mts)
+            # 送單逾時時可能已被接受，先預留本輪本金，避免短階梯重複用同一資金／總額度。
+            offers.append(Offer(id=-1, symbol=sym, mts_created=now_mts,
+                                amount=plan.amount, rate=plan.rate, period=plan.period))
             self.client.submit_offer(sym, plan.amount, plan.rate, plan.period,
                                      offer_type=plan.offer_type)
             st.long_fixed_fallback = False
@@ -632,30 +658,31 @@ class Engine:
                     f"曝險：{exposure + plan.amount:,.2f} / 上限 {cap:,.2f}\n"
                     f"（{int(float(self.scfg['frr_pilot'].get('timeout_minutes', 1440)) / 60)} "
                     f"小時內未成交會自動撤回）")
-            # 本輪新單尚未必出現在 API；本地保留它，避免階梯重複用總額度。
-            if self.cfg.lending_limit(sym) is not None:
-                offers.append(Offer(id=-1, symbol=sym, mts_created=now_mts,
-                                    amount=plan.amount, rate=plan.rate, period=plan.period))
             return max(0.0, available - plan.amount)
         except BfxError as e:
             log.warning("%s FRR 試點掛單失敗 %s: %s", sym, desc, e)
-            return available
+            # 即使被明確拒絕，本輪也先保守預留；下一輪由交易所真實餘額決定是否釋放。
+            return max(0.0, available - plan.amount)
 
     def _ladder_plans(self, sym: str, available: float, view: MarketView,
                       offers: list[Offer], credits: list[Credit],
-                      wallet_balance: float | None, buffer: float = 0.0):
+                      wallet_balance: float | None, buffer: float = 0.0,
+                      now_mts: int | None = None):
         budget = self._lending_budget(sym, available, offers, credits, wallet_balance)
         plans = build_ladder(max(0.0, budget - buffer), view, self.scfg)
         total = wallet_balance or (available + sum(c.amount for c in credits))
         exposure, _ = long_term_exposure_with_reserve(available, total, offers, credits)
         long_room = max(0.0, long_term_exposure_cap(total, self.scfg, sym) - exposure)
+        virtual = sum(o.amount for o in offers if self.dry_run and o.id == -1 and o.period >= 120)
+        long_room = min(long_room, max(0.0, self._long_batch_room(sym, now_mts) - virtual))
+        max_offer = float((self.scfg.get("frr_pilot") or {}).get("max_offer_amount", float("inf")))
         min_offer = float(self.scfg.get("min_offer_usd", 150))
         capped_plans = []
         for plan in plans:
             if plan.period < 120:
                 capped_plans.append(plan)
                 continue
-            amount = min(plan.amount, long_room)
+            amount = min(plan.amount, long_room, max_offer)
             if amount >= min_offer:
                 capped_plans.append(OfferPlan(amount=floor2(amount), rate=plan.rate,
                                                period=plan.period))
@@ -666,7 +693,8 @@ class Engine:
                       view: MarketView, now_mts: int, ts: str,
                       offers: list[Offer], credits: list[Credit],
                       wallet_balance: float | None):
-        plans = self._ladder_plans(sym, available, view, offers, credits, wallet_balance)
+        plans = self._ladder_plans(sym, available, view, offers, credits, wallet_balance,
+                                   now_mts=now_mts)
         st.last_plans = plans
         for p in plans:
             desc = f"{p.amount:,.2f} @ {fmt_apy(p.rate)} / {p.period}天"
@@ -677,11 +705,13 @@ class Engine:
                 continue
             if st.sim is not None:
                 st.sim.submit(sym, p, now_mts)
+                self._record_long_submission(sym, p.amount, p.period, now_mts)
                 log.info("[模擬] %s 掛單：%s", sym, desc)
                 self.store.log_action("submit(sim)", {"symbol": sym, "amount": p.amount,
                                                       "rate": p.rate, "period": p.period}, ts)
                 continue
             try:
+                self._record_long_submission(sym, p.amount, p.period, now_mts)
                 self.client.submit_offer(sym, p.amount, p.rate, p.period)
                 log.info("%s 掛單：%s", sym, desc)
                 self.store.log_action("submit", {"symbol": sym, "amount": p.amount,
@@ -1163,6 +1193,7 @@ class Engine:
             st.last_plans = []
             for p in plans:
                 try:
+                    self._record_long_submission(sym, p.amount, p.period)
                     self.client.submit_offer(sym, p.amount, p.rate, p.period)
                     self.store.log_action("submit(manual)", {
                         "symbol": sym, "amount": p.amount, "rate": p.rate,
@@ -1205,6 +1236,12 @@ class Engine:
                     room = max(0.0, long_term_exposure_cap(wallet, self.scfg, sym) - exposure)
                     if amount > floor2(room):
                         return f"❌ 超過120天上限；{sym} 最多可新增120天本金 {floor2(room):,.2f}"
+                    pcfg = self.scfg.get("frr_pilot") or {}
+                    batch_room = min(self._long_batch_room(sym),
+                                     float(pcfg.get("max_offer_amount", float("inf"))))
+                    if math.isfinite(batch_room) and amount > floor2(batch_room):
+                        return f"❌ 超過120天分批額度（含重啟等待）；{sym} 本窗口最多可新增 {floor2(batch_room):,.2f}"
+            self._record_long_submission(sym, amount, period)
             self.client.submit_offer(sym, amount, rate, period)
             self.store.log_action("submit(manual)", {
                 "symbol": sym, "amount": amount, "rate": rate, "period": period}, now_iso())
@@ -1219,6 +1256,12 @@ class Engine:
             if limit is not None:
                 lines.append(f"📏 {sym} 總放貸上限 {limit:,.2f}（放貸＋掛單；超額本金等待還款）")
             lines.append(f"📏 {sym} 120天上限 {long_term_exposure_cap(0, self.scfg, sym):,.2f}")
+            pcfg = self.scfg.get("frr_pilot") or {}
+            if "batch_max_amount" in pcfg:
+                lines.append(f"　└ 長貸單筆最多 {float(pcfg.get('max_offer_amount', pcfg['batch_max_amount'])):,.2f}"
+                             f"｜每 {float(pcfg.get('batch_window_minutes', 30)):g} 分鐘最多 "
+                             f"{float(pcfg['batch_max_amount']):,.2f}｜目前窗口剩餘 "
+                             f"{self._long_batch_room(sym):,.2f}（含重啟等待）")
             try:
                 wallet, available, offers, credits = self._funding_state(sym, st)
                 total = sum(c.amount for c in credits)

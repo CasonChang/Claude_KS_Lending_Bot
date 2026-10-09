@@ -130,6 +130,18 @@ def load_config(config_path: Path | None = None) -> Config:
         if amount is not None:
             caps[symbol] = amount
     pilot["long_term_max_amounts"] = caps
+    for name, field_name in [("LONG_TERM_MAX_PER_OFFER", "max_offer_amount"),
+                             ("LONG_TERM_BATCH_AMOUNT", "batch_max_amount"),
+                             ("LONG_TERM_BATCH_MINUTES", "batch_window_minutes")]:
+        amount = _amount_env(name)
+        if amount is not None:
+            pilot[field_name] = amount
+    for field_name in ["max_offer_amount", "batch_max_amount", "batch_window_minutes"]:
+        if field_name not in pilot:
+            continue
+        value = float(pilot[field_name])
+        if not math.isfinite(value) or value < 0 or (field_name == "batch_window_minutes" and value == 0):
+            raise ValueError(f"frr_pilot.{field_name} 必須有限且非負；窗口分鐘必須大於 0")
 
     env = Env(
         bfx_key=os.getenv("BFX_API_KEY", "").strip(),

@@ -36,7 +36,7 @@ strategy:
     - { weight: 0.30, mult: 1.15 }
     - { weight: 0.20, mult: 1.25 }
 
-  # spike 偵測：近 15 分鐘最高成交利率 > IQM × spike_mult 時觸發
+  # 一般階梯 spike：2–30 天成交最高 vs 同天期 IQM；>30 天訊號另供長貸判斷
   spike_window_minutes: 15
   spike_mult: 1.8
   spike_discount: 0.95       # spike 時最後一檔掛在 近期最高 × 0.95
@@ -80,6 +80,10 @@ strategy:
   frr_pilot:
     enabled: true
     long_term_max_amount: 1000 # 每幣別所有 120 天掛單＋放貸硬上限；LONG_TERM_MAX_AMOUNT env 可覆寫
+    max_offer_amount: 1000   # 每筆 120 天最多本金（FRR／固定皆算）
+    batch_max_amount: 1000   # 每幣別滾動 30 分鐘最多送單本金；撤單／失敗不退還窗口額度
+    # 送單前先扣窗口額度，避免 API 逾時但實際已接受時，下一路徑重複加碼。
+    batch_window_minutes: 30 # 重啟後也先等一個窗口，避免 redeploy 繞過分批限制
     min_offer_usd: 150
     period_days: 120         # 最大天期可承接所有 2～120 天 bid；成交後也可能真的鎖滿 120 天
     timeout_minutes: 4320    # 掛 72 小時仍沒成交才撤回，避免每天重掛洗掉排隊順位

@@ -51,6 +51,8 @@ class MarketView:
     long_trade_iqm: float = 0.0  # 近期 120 天固定成交 IQM
     long_best_bid: float = 0.0   # 當下 120 天固定借款 bid 最高利率
     long_trade_count: int = 0
+    long_recent_high: float | None = None  # >30 天市場訊號，與一般階梯分流
+    long_spike: bool = False
 
 
 def analyze_market(ticker: FundingTicker, book: list[BookEntry],
@@ -78,9 +80,15 @@ def analyze_market(ticker: FundingTicker, book: list[BookEntry],
 
     # 3) spike 偵測：近 N 分鐘最高成交 vs IQM
     window_mts = now_mts - int(scfg.get("spike_window_minutes", 15)) * 60_000
-    recent = [t.rate for t in trades if t.mts >= window_mts]
+    recent = [t.rate for t in trades if window_mts <= t.mts <= now_mts and 2 <= t.period <= 30]
     recent_high = max(recent, default=0.0)
-    spike = bool(anchor_iqm) and recent_high > anchor_iqm * float(scfg.get("spike_mult", 1.8))
+    short_iqm = iqm([t.rate for t in trades if 2 <= t.period <= 30][:lookback])
+    spike_mult = float(scfg.get("spike_mult", 1.8))
+    spike = bool(short_iqm) and recent_high > short_iqm * spike_mult
+    long_recent_high = max((t.rate for t in trades
+                            if window_mts <= t.mts <= now_mts and t.period > 30), default=0.0)
+    long_iqm = iqm([t.rate for t in trades if t.period > 30][:lookback])
+    long_spike = bool(long_iqm) and long_recent_high > long_iqm * spike_mult
 
     # 4) 行情保底：近 24 小時 1h K 收盤的第 P 百分位。
     #    成交 IQM 只涵蓋幾分鐘，市場短暫低迷時會把階梯整組拉低，
@@ -99,7 +107,8 @@ def analyze_market(ticker: FundingTicker, book: list[BookEntry],
                       trade_iqm=anchor_iqm, recent_high=recent_high,
                       spike=spike, anchor=anchor, rate_floor=rate_floor,
                       long_trade_iqm=long_trade_iqm, long_best_bid=long_best_bid,
-                      long_trade_count=len(long_rates))
+                      long_trade_count=len(long_rates), long_recent_high=long_recent_high,
+                      long_spike=long_spike)
 
 
 # ── 天期選擇 ──────────────────────────────────────────────
@@ -154,23 +163,35 @@ def build_ladder(available: float, view: MarketView, scfg: dict) -> list[OfferPl
         rungs.append(OfferPlan(amount=floor2(amount), rate=round(rate, 8),
                                period=choose_period(rate, scfg)))
 
-    # 太小的檔位由低利率往高利率合併（優先保住容易成交的低檔）
+    # 小額往較低檔合併；第一檔不足時累積金額，保留第一檔的利率／天期。
     merged: list[OfferPlan] = []
     carry = 0.0
+    carry_plan = rungs[0]
     for plan in rungs:
+        if plan.amount < min_offer and merged:
+            merged[-1].amount = floor2(merged[-1].amount + plan.amount + 1e-9)
+            continue
         amt = plan.amount + carry
         if amt < min_offer:
+            if not carry:
+                carry_plan = plan
             carry = amt
             continue
-        merged.append(OfferPlan(amount=floor2(amt), rate=plan.rate, period=plan.period))
+        source = carry_plan if carry else plan
+        merged.append(OfferPlan(amount=floor2(amt + 1e-9), rate=source.rate, period=source.period))
         carry = 0.0
-    if carry >= min_offer and merged:
+    if carry and merged:
         last = merged[-1]
-        merged[-1] = OfferPlan(amount=floor2(last.amount + carry),
+        merged[-1] = OfferPlan(amount=floor2(last.amount + carry + 1e-9),
                                rate=last.rate, period=last.period)
     if not merged and available >= min_offer:
         merged = [OfferPlan(amount=floor2(available), rate=rungs[0].rate,
                             period=rungs[0].period)]
+    if merged:
+        # 個別檔位捨去的小數餘額也併入最低檔；總額不超過可用餘額。
+        remainder_cents = int(available * 100) - sum(round(p.amount * 100) for p in merged)
+        if remainder_cents > 0:
+            merged[0].amount = (round(merged[0].amount * 100) + remainder_cents) / 100
     return merged
 
 
@@ -220,13 +241,16 @@ def frr_pilot_plan(available: float, frr_exposure: float, total_capital: float,
     fixed_threshold = fallback if allow_fixed_fallback else premium
     fixed_attractive = (view.long_trade_count >= min_samples and view.long_best_bid > 0
                         and view.long_best_bid >= view.frr * fixed_threshold)
-    triggered = (bool(pcfg.get("trigger_spike", True)) and view.spike) or (
-        view.frr > 0 and view.recent_high >= view.frr * near) or fixed_attractive
+    market_high = max(view.recent_high, view.long_recent_high or 0.0)
+    triggered = (bool(pcfg.get("trigger_spike", True)) and (view.spike or view.long_spike)) or (
+        view.frr > 0 and market_high >= view.frr * near) or fixed_attractive
     if not triggered:
         return None
     room = long_term_exposure_cap(total_capital, scfg, symbol) - frr_exposure
     min_offer = float(pcfg.get("min_offer_usd", scfg.get("min_offer_usd", 150)))
     amount = min(available, room)
+    if "max_offer_amount" in pcfg:
+        amount = min(amount, float(pcfg["max_offer_amount"]))
     if amount < min_offer:
         return None
     enough_long_data = view.long_trade_count >= min_samples

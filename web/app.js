@@ -21,7 +21,6 @@ const PERIODS = [
   { key: "a30:p2:p30", label: "2-30天" },
   { key: "p2", label: "2天" },
   { key: "p30", label: "30天" },
-  { key: "p120", label: "120天" },
 ];
 const DEFAULT_PKEY = "a30:p2:p30";
 
@@ -118,15 +117,16 @@ function buildMarketDOM() {
       <div class="cards">
         <div class="card"><div class="label">FRR 年化</div><div class="value" id="frr-${sym}">—</div></div>
         <div class="card"><div class="label">最近成交</div><div class="value" id="last-${sym}">—</div></div>
-        <div class="card"><div class="label">成交 IQM</div><div class="value" id="iqm-${sym}">—</div></div>
+        <div class="card"><div class="label">成交 IQM（全部天期）</div><div class="value" id="iqm-${sym}">—</div></div>
         <div class="card"><div class="label">隊首掛單（市場最低）</div><div class="value" id="ask-${sym}">—</div></div>
-        <div class="card"><div class="label">近 1 小時最高</div><div class="value" id="high-${sym}">—</div></div>
+        <div class="card"><div class="label">近 1 小時最高（樣本）</div><div class="value" id="high-${sym}">—</div></div>
       </div>
       <div class="sym-charts">
+        ${["short", "long"].map((panel) => `
         <div class="chart-box">
           <div class="chart-head">
-            <h3>成交利率 K 線（年化 %）</h3>
-            <div class="btn-rows">
+            <h3 id="title-${sym}-${panel}">${panel === "short" ? "2–30 天成交" : "120 天成交"}（年化 %）</h3>
+            ${panel === "short" ? `<div class="btn-rows">
               <div class="tf-btns" id="tfs-${sym}">
                 ${TFS.map((tf) => `<button class="tf ${tf === DEFAULT_TF ? "active" : ""}"
                    data-sym="${sym}" data-tf="${tf}">${tf}</button>`).join("")}
@@ -135,37 +135,19 @@ function buildMarketDOM() {
                 ${PERIODS.map((p) => `<button class="tf pd ${p.key === DEFAULT_PKEY ? "active" : ""}"
                    data-sym="${sym}" data-pkey="${p.key}">${p.label}</button>`).join("")}
               </div>
-            </div>
+            </div>` : `<span class="muted small" id="long-tf-${sym}">同左側 ${DEFAULT_TF} K</span>`}
           </div>
-          <div class="ohlc muted small" id="ohlc-${sym}">（滑鼠移到 K 棒上顯示開高低收）</div>
-          <div class="kchart" id="kchart-${sym}"></div>
-        </div>
-        <div class="chart-box">
-          <div class="chart-head">
-            <h3>掛單簿深度</h3>
-            <div class="tf-btns" id="bks-${sym}">
-              ${["2天", "3-30天", ">30天", "借款方"].map((bk) =>
-                `<button class="tf bk ${bk !== "借款方" ? "active" : ""}"
-                  data-sym="${sym}" data-bk="${bk}">${bk}</button>`).join("")}
-            </div>
-          </div>
-          <canvas id="book-${sym}"></canvas>
-        </div>
+          <div class="ohlc muted small" id="ohlc-${sym}-${panel}">等待成交 K 線…</div>
+          <div class="kchart" id="kchart-${sym}-${panel}"></div>
+        </div>`).join("")}
       </div>
+      <p class="muted small">左側可切換借貸天期；K 棒週期同時套用兩張圖。120 天成交可能包含浮動 FRR，較高年化不代表固定利率一定成交。</p>
     </div>`).join("");
 
-  document.querySelectorAll(".tf:not(.pd):not(.bk)").forEach((btn) =>
+  document.querySelectorAll("#marketSections [data-tf]").forEach((btn) =>
     btn.addEventListener("click", () => switchTf(btn.dataset.sym, btn.dataset.tf)));
-  document.querySelectorAll(".tf.pd").forEach((btn) =>
+  document.querySelectorAll("#marketSections [data-pkey]").forEach((btn) =>
     btn.addEventListener("click", () => switchPeriod(btn.dataset.sym, btn.dataset.pkey)));
-  document.querySelectorAll(".tf.bk").forEach((btn) =>
-    btn.addEventListener("click", () => {
-      const { sym, bk } = btn.dataset;
-      const sel = market.states[sym].bookSel;
-      sel.has(bk) ? sel.delete(bk) : sel.add(bk);  // 複選開關
-      btn.classList.toggle("active", sel.has(bk));
-      market.states[sym].dirty = true;
-    }));
 }
 
 // ═══════════ 市場區 WebSocket ═══════════
@@ -173,15 +155,15 @@ function buildMarketDOM() {
 const market = {
   ws: null,
   chan: {},     // chanId -> { sym, channel }
-  states: {},   // sym -> { tf, ticker, trades[], book[], candleChanId, kchart, kseries, bookChart, dirty }
+  states: {},   // sym -> { tf, pkey, ticker, trades[], charts: { short, long }, dirty }
 };
 
 function candleKey(sym, tf, pkey) {
   return `trade:${tf}:${sym}:${pkey}`;
 }
 
-function initKChart(sym) {
-  const el = $(`kchart-${sym}`);
+function initKChart(sym, panel) {
+  const el = $(`kchart-${sym}-${panel}`);
   const chart = LightweightCharts.createChart(el, {
     autoSize: true,
     layout: { background: { color: "transparent" }, textColor: chartColors.text },
@@ -200,7 +182,7 @@ function initKChart(sym) {
   });
   // 滑過 K 棒時顯示該棒的開高低收
   chart.subscribeCrosshairMove((param) => {
-    const el = $(`ohlc-${sym}`);
+    const el = $(`ohlc-${sym}-${panel}`);
     const d = param?.seriesData?.get(series);
     if (!d || d.open === undefined) {
       el.textContent = "（滑鼠移到 K 棒上顯示開高低收）";
@@ -229,18 +211,15 @@ function startMarket() {
   market.chan = {};
   for (const { sym } of SYMBOLS) {
     const prev = market.states[sym];
-    market.states[sym] = {
+    const st = market.states[sym] = {
       tf: prev?.tf || DEFAULT_TF, pkey: prev?.pkey || DEFAULT_PKEY,
-      bookSel: prev?.bookSel || new Set(["2天", "3-30天", ">30天"]),  // 預設不含借款方
-      ticker: null, trades: [], book: [],
-      candleChanId: null,
-      kchart: prev?.kchart, kseries: prev?.kseries, bookChart: prev?.bookChart,
-      dirty: false,
+      ticker: null, trades: [], charts: {}, dirty: false,
     };
-    if (!market.states[sym].kseries) {
-      const { chart, series } = initKChart(sym);
-      market.states[sym].kchart = chart;
-      market.states[sym].kseries = series;
+    for (const panel of ["short", "long"]) {
+      const old = prev?.charts?.[panel];
+      const { chart, series } = old || initKChart(sym, panel);
+      st.charts[panel] = { chart, series, chanId: null, key: null, ready: false };
+      series.setData([]);
     }
   }
 
@@ -248,25 +227,34 @@ function startMarket() {
   market.ws = ws;
 
   ws.onopen = () => {
+    if (market.ws !== ws) return;
     for (const { sym } of SYMBOLS) {
       ws.send(JSON.stringify({ event: "subscribe", channel: "ticker", symbol: sym }));
       ws.send(JSON.stringify({ event: "subscribe", channel: "trades", symbol: sym }));
-      ws.send(JSON.stringify({ event: "subscribe", channel: "book", symbol: sym,
-                               prec: "P0", len: "100" }));
-      ws.send(JSON.stringify({ event: "subscribe", channel: "candles",
-                               key: candleKey(sym, market.states[sym].tf,
-                                              market.states[sym].pkey) }));
+      for (const panel of ["short", "long"]) resubscribeCandles(sym, panel);
     }
   };
 
   ws.onmessage = (ev) => {
+    if (market.ws !== ws) return;
     const msg = JSON.parse(ev.data);
     if (!Array.isArray(msg)) {
       if (msg.event === "subscribed") {
         if (msg.channel === "candles") {
           const sym = msg.key.split(":")[2];
-          market.chan[msg.chanId] = { sym, channel: "candles" };
-          market.states[sym].candleChanId = msg.chanId;
+          const st = market.states[sym];
+          const panel = ["short", "long"].find((name) => st?.charts[name].key === msg.key);
+          if (!panel) {
+            ws.send(JSON.stringify({ event: "unsubscribe", chanId: msg.chanId }));
+            return; // 忽略快速切換後才到達的舊訂閱
+          }
+          const chart = st.charts[panel];
+          if (chart.chanId != null) {
+            delete market.chan[chart.chanId];
+            ws.send(JSON.stringify({ event: "unsubscribe", chanId: chart.chanId }));
+          }
+          market.chan[msg.chanId] = { sym, channel: "candles", panel };
+          chart.chanId = msg.chanId;
         } else {
           market.chan[msg.chanId] = { sym: msg.symbol, channel: msg.channel };
         }
@@ -279,14 +267,14 @@ function startMarket() {
     if (payload === "hb") return;
     const meta = market.chan[chanId];
     if (!meta) return;
-    handleChannel(meta.sym, meta.channel, payload, extra);
+    handleChannel(meta.sym, meta.channel, payload, extra, meta.panel);
   };
 
   ws.onclose = () => setTimeout(startMarket, 3000);
   ws.onerror = () => { $("lastUpdate").textContent = "連線中斷，重連中…"; };
 }
 
-function handleChannel(sym, channel, payload, extra) {
+function handleChannel(sym, channel, payload, extra, panel) {
   const st = market.states[sym];
   if (!st) return;
 
@@ -301,71 +289,65 @@ function handleChannel(sym, channel, payload, extra) {
       st.trades = st.trades.slice(0, 250);
     }
     st.dirty = true;
-  } else if (channel === "book") {
-    if (Array.isArray(payload) && Array.isArray(payload[0])) {
-      st.book = payload;
-    } else if (Array.isArray(payload)) {
-      applyBookUpdate(st, payload);
-    }
-    st.dirty = true;
   } else if (channel === "candles") {
+    const target = st.charts[panel];
+    if (!target) return;
     if (Array.isArray(payload) && Array.isArray(payload[0])) {
       // 快照：去重 + 由舊到新
       const seen = new Map();
       for (const c of payload) seen.set(c[0], c);
       const data = [...seen.values()].sort((a, b) => a[0] - b[0]).map(mapCandle);
-      st.kseries.setData(data);
+      target.series.setData(data);
+      target.ready = true;
+      $(`ohlc-${sym}-${panel}`).textContent = data.length ? "滑鼠移到 K 棒顯示開高低收" : "此範圍尚無成交 K 線";
       // 預設只顯示最近約 48 根（1h K 約 2 天），太寬會密密麻麻；使用者仍可自由縮放/平移
       const bars = data.length;
       if (bars > VISIBLE_BARS) {
-        st.kchart.timeScale().setVisibleLogicalRange({ from: bars - VISIBLE_BARS, to: bars + 1 });
+        target.chart.timeScale().setVisibleLogicalRange({ from: bars - VISIBLE_BARS, to: bars + 1 });
       } else {
-        st.kchart.timeScale().fitContent();
+        target.chart.timeScale().fitContent();
       }
     } else if (Array.isArray(payload) && typeof payload[0] === "number") {
-      st.kseries.update(mapCandle(payload));
+      if (target.ready) target.series.update(mapCandle(payload));
     }
   }
 }
 
-function applyBookUpdate(st, [rate, period, count, amount]) {
-  const idx = st.book.findIndex((e) => e[0] === rate && e[1] === period);
-  if (count > 0) {
-    if (idx >= 0) st.book[idx] = [rate, period, count, amount];
-    else st.book.push([rate, period, count, amount]);
-  } else if (idx >= 0) {
-    st.book.splice(idx, 1);
-  }
-}
-
-function resubscribeCandles(sym) {
+function resubscribeCandles(sym, panel) {
   const st = market.states[sym];
-  if (market.ws?.readyState !== WebSocket.OPEN) return;
-  if (st.candleChanId != null) {
-    market.ws.send(JSON.stringify({ event: "unsubscribe", chanId: st.candleChanId }));
-    st.candleChanId = null;
+  const target = st.charts[panel];
+  target.key = candleKey(sym, st.tf, panel === "long" ? "p120" : st.pkey);
+  target.series.setData([]);
+  target.ready = false;
+  $(`ohlc-${sym}-${panel}`).textContent = "等待成交 K 線…";
+  if (target.chanId != null) {
+    delete market.chan[target.chanId]; // 立即停止接受舊頻道的資料
+    if (market.ws?.readyState === WebSocket.OPEN)
+      market.ws.send(JSON.stringify({ event: "unsubscribe", chanId: target.chanId }));
+    target.chanId = null;
   }
-  market.ws.send(JSON.stringify({ event: "subscribe", channel: "candles",
-                                  key: candleKey(sym, st.tf, st.pkey) }));
+  if (market.ws?.readyState === WebSocket.OPEN)
+    market.ws.send(JSON.stringify({ event: "subscribe", channel: "candles", key: target.key }));
 }
 
 function switchTf(sym, tf) {
   const st = market.states[sym];
-  if (!st || st.tf === tf) return;
+  if (!st || !TFS.includes(tf) || st.tf === tf) return;
   st.tf = tf;
   document.querySelectorAll(`#tfs-${sym} .tf`).forEach((b) =>
     b.classList.toggle("active", b.dataset.tf === tf));
-  resubscribeCandles(sym);
+  $(`long-tf-${sym}`).textContent = `同左側 ${tf} K`;
+  for (const panel of ["short", "long"]) resubscribeCandles(sym, panel);
 }
 
 function switchPeriod(sym, pkey) {
   const st = market.states[sym];
-  if (!st || st.pkey === pkey) return;
+  if (!st || !PERIODS.some((p) => p.key === pkey) || st.pkey === pkey) return;
   st.pkey = pkey;
+  $(`title-${sym}-short`).textContent = `${PERIODS.find((p) => p.key === pkey).label}成交（年化 %）`;
   document.querySelectorAll(`#pds-${sym} .tf`).forEach((b) =>
     b.classList.toggle("active", b.dataset.pkey === pkey));
-  st.kseries.setData([]);  // 清掉舊天期的 K 棒，等新快照
-  resubscribeCandles(sym);
+  resubscribeCandles(sym, "short");
 }
 
 // ═══════════ 市場區渲染（每 2 秒，K 線除外）═══════════
@@ -389,69 +371,11 @@ function renderMarket() {
       const hr = st.trades.filter((t) => t.mts >= hourAgo).map((t) => t.rate);
       $(`high-${sym}`).textContent = hr.length ? pct(dailyToApy(Math.max(...hr))) : "—";
     }
-    if (st.book.length) drawBookChart(sym, st);
   }
   if (updated) {
     $("lastUpdate").textContent =
       "更新 " + new Date().toLocaleTimeString("zh-TW", { hour12: false });
   }
-}
-
-// 掛單簿深度依天期分組：各自畫累計曲線，看得出不同天期市場的供給結構
-const BOOK_BUCKETS = [
-  { name: "2天", test: (p) => p <= 2, color: "#4fc3f7" },
-  { name: "3-30天", test: (p) => p > 2 && p <= 30, color: "#ffb74d" },
-  { name: ">30天", test: (p) => p > 30, color: "#ab7df8" },
-];
-
-function drawBookChart(sym, st) {
-  const all = BOOK_BUCKETS.map((b) => {
-    const asks = st.book.filter((e) => e[3] > 0 && b.test(e[1]))
-      .map((e) => ({ rate: e[0], amount: e[3] }))
-      .sort((x, y) => x.rate - y.rate);
-    let cum = 0;
-    return {
-      label: b.name,
-      data: asks.map((a) => { cum += a.amount; return { x: dailyToApy(a.rate), y: cum }; }),
-      borderColor: b.color, pointRadius: 0, stepped: true, borderWidth: 1.5,
-    };
-  });
-
-  // 借款方（bids）：想借錢的人掛的需求單，從最高出價往低利率累計
-  const bids = st.book.filter((e) => e[3] < 0)
-    .map((e) => ({ rate: e[0], amount: -e[3] }))
-    .sort((x, y) => y.rate - x.rate);
-  let cumB = 0;
-  all.push({
-    label: "借款方",
-    data: bids.map((b) => { cumB += b.amount; return { x: dailyToApy(b.rate), y: cumB }; }),
-    borderColor: chartColors.bad, pointRadius: 0, stepped: true,
-    borderWidth: 1.5, borderDash: [5, 3],
-  });
-
-  const datasets = all.filter((ds) => ds.data.length && st.bookSel.has(ds.label));
-
-  if (st.bookChart) {
-    st.bookChart.data.datasets = datasets;
-    st.bookChart.update("none");
-    return;
-  }
-  st.bookChart = new Chart($(`book-${sym}`), {
-    type: "line",
-    data: { datasets },
-    options: {
-      animation: false,
-      plugins: { legend: { display: true }, tooltip: {
-        callbacks: { label: (c) =>
-          `${c.dataset.label}：年化 ${c.parsed.x.toFixed(2)}% 前累計 $${Math.round(c.parsed.y).toLocaleString()}` },
-      }},
-      scales: {
-        x: { type: "linear", title: { display: true, text: "年化 %" },
-             ticks: { callback: (v) => v.toFixed(1) + "%" } },
-        y: { ticks: { callback: (v) => "$" + (v / 1000).toFixed(0) + "k" } },
-      },
-    },
-  });
 }
 
 // ═══════════ 個人區（Supabase）═══════════
@@ -566,7 +490,6 @@ function renderDashboard(d) {
   drawWalletTrendChart(earnings);
   drawEarningsChart(earnings);
   drawDailyApyChart(earnings);
-  drawAnchorChart(d.snapshots || []);
   renderOffers(statuses);
   renderSuggested(statuses);
   const mainSelected = selectedAccounts.has("main");
@@ -963,6 +886,52 @@ function renderWalletTrendChart() {
 
 let anchorSnaps = [];      // 後端給的近 7 天降採樣資料
 let anchorRangeDays = 3;   // 預設顯示近 3 天
+let anchorsLoading = false;
+
+function publicAnchorRows(rows) {
+  return (Array.isArray(rows) ? rows : []).filter((s) =>
+    SYMBOLS.some(({ sym }) => sym === s.symbol) && typeof s.anchor_apy === "number"
+    && Number.isFinite(s.anchor_apy) && s.anchor_apy >= 0
+    && Number.isFinite(Date.parse(s.ts)))
+    .map(({ ts, symbol, anchor_apy }) => ({ ts, symbol, anchor_apy }))
+    .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+}
+
+async function loadPublicAnchors() {
+  if (anchorsLoading) return;
+  anchorsLoading = true;
+  try {
+    let rows, live = false;
+    if (CFG.SUPABASE_URL && CFG.SUPABASE_ANON_KEY) {
+      try {
+        const r = await fetch(`${CFG.SUPABASE_URL}/rest/v1/rpc/public_anchor_data`, {
+          method: "POST", headers: {
+            apikey: CFG.SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${CFG.SUPABASE_ANON_KEY}`,
+            "Content-Type": "application/json",
+          }, body: "{}", signal: AbortSignal.timeout(10_000),
+        });
+        if (r.ok) {
+          const data = await r.json();
+          if (Array.isArray(data?.snapshots)) { rows = data.snapshots; live = true; }
+        }
+      } catch (_) { /* 沒有即時來源時，保留可讀的公開歷史快照 */ }
+    }
+    if (!live) {
+      const r = await fetch("public-anchors.json", { cache: "no-store", signal: AbortSignal.timeout(10_000) });
+      if (!r.ok) throw new Error("沒有公開快照");
+      rows = (await r.json()).snapshots;
+    }
+    rows = publicAnchorRows(rows);
+    drawAnchorChart(rows);
+    const latest = rows.length ? Date.parse(rows[rows.length - 1].ts) : 0;
+    $("anchorStatus").textContent = latest
+      ? `${live ? "公開市場資料" : "歷史快照（即時來源尚未啟用）"} · 最後資料 ${new Date(latest).toLocaleString("zh-TW", { hour12: false })}${Date.now() - latest > 15 * 60_000 ? " · 資料已超過 15 分鐘" : ""}`
+      : "近 7 天尚無公開錨點資料";
+  } catch (_) {
+    $("anchorStatus").textContent = "公開錨點暫時無法更新；已有圖表保留最後資料";
+  } finally { anchorsLoading = false; }
+}
 
 function drawAnchorChart(snaps) {
   anchorSnaps = snaps || [];
@@ -988,7 +957,7 @@ function renderAnchorChart() {
     options: {
       plugins: { legend: { display: symbols.length > 1 } },
       scales: {
-        x: { type: "linear", ticks: {
+        x: { type: "linear", min: cutoff, max: Date.now(), ticks: {
           maxTicksLimit: multiDay ? 8 : 6,
           callback: (v) => {
             const d = new Date(v);
@@ -1169,7 +1138,9 @@ document.querySelectorAll("#walletTrendSplit .tf").forEach((btn) =>
 
 buildMarketDOM();
 startMarket();
-setInterval(renderMarket, 2000);  // 卡片/深度圖最多每 2 秒重繪；K 線即時更新
+setInterval(renderMarket, 2000);  // 市場卡片最多每 2 秒重繪；K 線即時更新
+loadPublicAnchors();
+setInterval(loadPublicAnchors, 60_000);
 
 const saved = localStorage.getItem(TOKEN_KEY);
 if (saved) tryUnlock(saved, true);

@@ -24,6 +24,27 @@ def test_frr_third_stage_parameters():
     assert pilot["timeout_minutes"] == 4320
 
 
+def test_long_batch_environment_overrides_and_blank_defaults(monkeypatch):
+    monkeypatch.setenv("LONG_TERM_MAX_PER_OFFER", "500")
+    monkeypatch.setenv("LONG_TERM_BATCH_AMOUNT", "800")
+    monkeypatch.setenv("LONG_TERM_BATCH_MINUTES", "60")
+    pilot = load_config().strategy["frr_pilot"]
+    assert (pilot["max_offer_amount"], pilot["batch_max_amount"], pilot["batch_window_minutes"]) == (500, 800, 60)
+    for name in ["LONG_TERM_MAX_PER_OFFER", "LONG_TERM_BATCH_AMOUNT", "LONG_TERM_BATCH_MINUTES"]:
+        monkeypatch.setenv(name, "")
+    pilot = load_config().strategy["frr_pilot"]
+    assert (pilot["max_offer_amount"], pilot["batch_max_amount"], pilot["batch_window_minutes"]) == (1000, 1000, 30)
+
+
+@pytest.mark.parametrize("name,value", [("LONG_TERM_BATCH_MINUTES", "0"),
+                                      ("LONG_TERM_BATCH_AMOUNT", "nan"),
+                                      ("LONG_TERM_MAX_PER_OFFER", "-1")])
+def test_invalid_long_batch_configuration_fails_before_startup(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError):
+        load_config()
+
+
 def test_long_term_max_amount_env_override(monkeypatch):
     monkeypatch.setenv("LONG_TERM_MAX_AMOUNT", "1250")
 
