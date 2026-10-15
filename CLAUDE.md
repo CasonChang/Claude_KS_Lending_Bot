@@ -78,7 +78,8 @@ Bitfinex P2P 放貸自動化機器人。使用者說**繁體中文**，回覆請
   `casonchang.github.io/Claude_KS_Lending_Bot/learn.html`，同 Dashboard 密碼，
   RPC `learning_data`）。
 - **每日學習檢討**：SOP 見 [`reviews/learning/README.md`](reviews/learning/README.md)。
-  結算窗口＝UTC 日（Bitfinex 利息 00:00 UTC＝台北 08:00 入帳），每天台北 09:30 後跑，
+  結算窗口＝UTC 日（台北 08:00 為日界線；2026-10 實查帳本約台北 09:30 才入帳），
+  每天台北 10:30 後依 SOP 確認資料齊全再跑；每日 Telegram 日報改為台北 10:00 直接查帳本。
   寫 `reviews/learning/YYYY-MM-DD.md` → `python tools/post_learning_review.py <檔>` → push。
 - **鐵則**：主帳戶策略只有使用者明確下令才能改，改了記在當日檢討「主帳戶策略變更紀錄」。
 - 一次性安裝：`supabase/migrations/010_learning.sql` 先在 Supabase SQL Editor 跑一次。
@@ -93,7 +94,7 @@ Bitfinex P2P 放貸自動化機器人。使用者說**繁體中文**，回覆請
 
 - Zeabur 真實模式運行中；本機已停。帳戶 fUSD + fUST 放貸中（規模約 1 萬鎬，使用者陸續加碼，
   目標實測一個月真實月報酬）。
-- 已上線功能：churn 修復、每日 9am 報告 + 策略檢討、錨點年化 7 天圖、資金變動自動偵測
+- 已上線功能：churn 修復、每日報告（2026-10-15 改為台北 10am 精簡版，完整檢討用 /review）、錨點年化 7 天圖、資金變動自動偵測
   （入金/出金/兌換 → DB + 網頁 + 推播，每 15 分同步）、成交/結束推播合併、手機 RWD、
   網頁費用基準釐清、錢包趨勢圖與每日年化圖的加總/分幣別切換。
 - 學習模式程式已就緒，等使用者：跑 migration 010、開子帳戶、雙邊各入 1 萬 USD、

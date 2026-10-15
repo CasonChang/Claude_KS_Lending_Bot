@@ -510,6 +510,9 @@ const fullIncome = (c) => (c.amount || 0) * (c.rate || 0) * (c.period || 0) * NE
 // 放貸中明細：每欄可點箭頭做升/降冪排序
 let creditsRows = [];
 let creditsSort = { idx: 6, dir: -1 };  // 預設：開始時間 新→舊
+let creditsPage = 0;
+let creditsPerPage = 10;
+let creditsAccountScope = "";
 let creditsHeadersWired = false;
 // 各欄的排序取值（對應 thead 八欄）
 const CREDIT_SORT_KEYS = [
@@ -524,6 +527,9 @@ const CREDIT_SORT_KEYS = [
 ];
 
 function renderCredits(statuses) {
+  const scope = [...selectedAccounts].sort().join(",");
+  if (scope !== creditsAccountScope) creditsPage = 0;
+  creditsAccountScope = scope;
   creditsRows = statuses.flatMap((s) =>
     (s.credits || []).map((c) => ({ symbol: s.symbol, account: s.account, ...c })));
   setupCreditsSortHeaders();
@@ -541,6 +547,7 @@ function setupCreditsSortHeaders() {
       th.addEventListener("click", () => {
         if (creditsSort.idx === idx) creditsSort.dir *= -1;
         else creditsSort = { idx, dir: idx === 0 ? 1 : -1 };  // 數字欄預設大→小、幣別小→大
+        creditsPage = 0;
         renderCreditsBody();
         updateCreditsArrows();
       });
@@ -563,6 +570,8 @@ function updateCreditsArrows() {
 function renderCreditsBody() {
   const tbody = $("creditsTable").querySelector("tbody");
   if (!creditsRows.length) {
+    creditsPage = 0;
+    $("creditsPager").innerHTML = "";
     tbody.innerHTML = `<tr><td colspan="8" class="muted">目前沒有放貸中的部位</td></tr>`;
     return;
   }
@@ -573,7 +582,11 @@ function renderCreditsBody() {
     return creditsSort.dir * (va - vb);
   });
 
-  const body = creditsRows.map((c) => {
+  const pages = Math.ceil(creditsRows.length / creditsPerPage);
+  creditsPage = Math.max(0, Math.min(creditsPage, pages - 1));
+  const start = creditsPage * creditsPerPage;
+  const pageRows = creditsRows.slice(start, start + creditsPerPage);
+  const body = pageRows.map((c) => {
     const remainPct = c.period ? Math.max(0, c.remaining_days / c.period) : 0;
     const bar = `<span class="mini-bar"><span style="width:${(1 - remainPct) * 100}%"></span></span>`;
     // FRR 浮動部位：年化用「當下 FRR」換算（其 rate 欄本身是 0＝相對 FRR 的偏移量），標記提醒會浮動
@@ -590,13 +603,30 @@ function renderCreditsBody() {
   const tAmt = creditsRows.reduce((a, c) => a + (c.amount || 0), 0);
   const tDaily = creditsRows.reduce((a, c) => a + dailyIncome(c), 0);
   const tFull = creditsRows.reduce((a, c) => a + fullIncome(c), 0);
-  const total = `<tr class="total-row"><td>合計 ${creditsRows.length} 筆</td>
+  const total = `<tr class="total-row"><td>全部合計 ${creditsRows.length} 筆</td>
     <td>$${tAmt.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
     <td>—</td><td>—</td>
     <td class="good">+$${tDaily.toFixed(4)}/日</td>
     <td class="good">+$${tFull.toFixed(4)}</td>
     <td>—</td><td>—</td></tr>`;
   tbody.innerHTML = body + total;
+  $("creditsPager").innerHTML = `
+    <span class="page-info">第 ${start + 1}–${start + pageRows.length} 筆，共 ${creditsRows.length} 筆</span>
+    <label class="page-info">每頁 <select id="creditsPageSize" aria-label="放貸明細每頁筆數">
+      ${[10, 20, 50].map((n) => `<option value="${n}" ${creditsPerPage === n ? "selected" : ""}>${n} 筆</option>`).join("")}
+    </select></label>
+    <button class="ghost" id="creditsPrev" ${creditsPage === 0 ? "disabled" : ""}>← 上一頁</button>
+    <span class="page-info" aria-live="polite">${creditsPage + 1} / ${pages}</span>
+    <button class="ghost" id="creditsNext" ${creditsPage === pages - 1 ? "disabled" : ""}>下一頁 →</button>`;
+  $("creditsPrev").onclick = () => { creditsPage--; renderCreditsBody(); };
+  $("creditsNext").onclick = () => { creditsPage++; renderCreditsBody(); };
+  $("creditsPageSize").onchange = (event) => {
+    const size = Number(event.target.value);
+    if (![10, 20, 50].includes(size)) return;
+    creditsPerPage = size;
+    creditsPage = 0;
+    renderCreditsBody();
+  };
 }
 
 function renderSuggested(statuses) {

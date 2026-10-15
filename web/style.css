@@ -131,6 +131,7 @@ th.sortable:hover { color: var(--text); }
   font-size: 0.72rem; margin-left: 3px; cursor: help; border-bottom: 1px dotted var(--muted);
 }
 .tip::after {
+  display: none;
   content: attr(data-tip);
   position: absolute; left: 50%; bottom: 150%; transform: translateX(-50%);
   background: #0b1016; color: var(--text); border: 1px solid var(--border);
@@ -139,11 +140,12 @@ th.sortable:hover { color: var(--text); }
   text-align: left; opacity: 0; pointer-events: none; transition: opacity .12s;
   z-index: 100; box-shadow: 0 4px 16px rgba(0,0,0,.4);
 }
-.tip:hover::after { opacity: 1; }
+.tip:hover::after { display: block; opacity: 1; }
 
 /* 合計列 + 分頁 */
 tr.total-row td { font-weight: 700; border-top: 2px solid var(--border); }
-.pager { display: flex; align-items: center; gap: 10px; margin-top: 10px; justify-content: flex-end; }
+.pager { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; justify-content: flex-end; }
+.pager select { padding: 4px 6px; font-size: 0.8rem; }
 .pager button { padding: 4px 12px; font-size: 0.8rem; }
 .pager button:disabled { opacity: .4; cursor: default; }
 .pager .page-info { color: var(--muted); font-size: 0.8rem; }

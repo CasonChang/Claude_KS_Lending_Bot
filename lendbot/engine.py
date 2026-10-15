@@ -13,8 +13,11 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+from requests import RequestException
+
 from .bfx_client import BfxClient, BfxError, Credit, Offer
 from .config import Config
+from .daily_report import CurrencyReport, format_daily_report, summarize_income
 from .logger import get_logger
 from .store import Store
 from .strategy import (MarketView, OfferPlan, analyze_market, apy_to_daily,
@@ -238,6 +241,7 @@ class Engine:
         self.last_earnings_sync = 0.0
         self.last_capital_sync = 0.0
         self.last_report_date = ""
+        self.last_report_attempt = 0.0
         self.last_rebalance_notify = 0.0
         self.last_rebalance_check = 0.0
         self.ma_apy: dict[str, float] = {}  # 各幣別 30 日 MA 年化（%），給 /rates 與日報用
@@ -917,12 +921,19 @@ class Engine:
                 lines.append(f"{currency}：查詢失敗 {e}")
                 continue
             sums = {1: 0.0, 7: 0.0, 30: 0.0}
+            today_posted = False
             for e in entries:
-                age_days = (now - datetime.fromtimestamp(e.mts / 1000, TZ)).days
+                posted = datetime.fromtimestamp(e.mts / 1000, TZ)
+                if posted > now:
+                    continue
+                age_days = (now.date() - posted.date()).days
+                today_posted |= age_days == 0
                 for k in sums:
                     if age_days < k:
                         sums[k] += e.amount
-            lines.append(f"{currency}｜今日 {sums[1]:.4f}｜7日 {sums[7]:.4f}｜30日 {sums[30]:.4f}")
+            today_text = f"{sums[1]:.4f}" if today_posted else "尚未入帳"
+            label = "USDT" if currency == "UST" else currency
+            lines.append(f"{label}｜今日入帳 {today_text}｜7日 {sums[7]:.4f}｜30日 {sums[30]:.4f}")
         return "\n".join(lines)
 
     def _yesterday_earnings(self, y_start: datetime, y_end: datetime) -> dict:
@@ -1060,20 +1071,44 @@ class Engine:
             lines.append("💰 資金變動：" + fl)
         return "\n".join(lines)
 
+    def _compact_daily_report(self, now: datetime) -> str:
+        now = now.astimezone(TZ)
+        if not self.has_auth:
+            return f"📊 放貸日報｜{now:%m/%d %H:%M}\n模擬模式，沒有真實入帳紀錄"
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=6)
+        rows = []
+        for sym, st in self.states.items():
+            currency = sym[1:]
+            income = None
+            try:
+                entries = self.client.funding_earnings(currency, start_mts=int(start.timestamp() * 1000),
+                                                      limit=1000)
+                income = summarize_income(entries, now)
+            except (BfxError, RequestException) as e:
+                log.warning("%s 日報入帳查詢失敗: %s", sym, e)
+            wallet = lent = long_used = long_cap = None
+            try:
+                with self._funding_lock:
+                    wallet, available, offers, credits = self._funding_state(sym, st)
+                lent = sum(c.amount for c in credits)
+                long_used, _ = long_term_exposure_with_reserve(available, wallet, offers, credits)
+                long_cap = long_term_exposure_cap(wallet, self.scfg, sym)
+            except (BfxError, RequestException) as e:
+                log.warning("%s 日報持倉查詢失敗: %s", sym, e)
+            rows.append(CurrencyReport("USDT" if currency == "UST" else currency,
+                                       income, wallet, lent, long_used, long_cap))
+        return format_daily_report(now, rows)
+
     def _maybe_daily_report(self):
-        hour = int(self.cfg.telegram.get("daily_report_hour", 9))
+        hour = int(self.cfg.telegram.get("daily_report_hour", 10))
         now = datetime.now(TZ)
         today = now.strftime("%Y-%m-%d")
         if now.hour == hour and self.last_report_date != today:
-            self.last_report_date = today
-            ma_line = ""
-            if self.ma_apy:
-                ma_line = "\n30日MA年化：" + "｜".join(f"{s} {a:.2f}%"
-                                                    for s, a in self.ma_apy.items())
-            self.tg.notify("📊 每日報告\n" + self._earnings_summary() + ma_line
-                           + "\n\n" + self._yesterday_review()
-                           + "\n\n" + self._learning_status_text()
-                           + "\n\n" + self._status_text())
+            if self.last_report_attempt and time.time() - self.last_report_attempt < 300:
+                return
+            self.last_report_attempt = time.time()
+            if self.tg.notify(self._compact_daily_report(now)):
+                self.last_report_date = today
 
     def _learning_status_text(self) -> str:
         """子帳戶各幣別持倉；供每日推播與 /learning 即時查詢。"""

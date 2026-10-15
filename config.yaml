@@ -97,7 +97,7 @@ dry_run:
   simulated_balance: 1000    # DRY_RUN 且沒 API key 時的模擬餘額
 
 telegram:
-  daily_report_hour: 9       # 每日收益總結的推播時間（UTC+8）
+  daily_report_hour: 10      # 台北每日10點；實測入帳約09:30，發送前重新查帳本
   notify_spike: true
   notify_fills: true
   notify_closes: true        # 放貸結束（提前還款/到期）通知
